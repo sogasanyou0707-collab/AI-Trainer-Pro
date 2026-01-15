@@ -12,7 +12,11 @@ from streamlit_gsheets import GSheetsConnection
 # 1. 基本設定（ここを書き換えてください）
 # ==========================================
 # Googleスプレッドシートの「共有」設定で、サービスアカウントのメールアドレスを「編集者」にするのを忘れずに！
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1vzYjmLH3vGtbOv_4A6UwCN7Pe-W24Q6hln-vtxLr1GU/edit?gid=0#gid=0"
+if "connections" in st.secrets and "gsheets" in st.secrets.connections:
+    SPREADSHEET_URL = st.secrets.connections.gsheets.spreadsheet
+else:
+    st.error("Secretsの設定が読み込めません。Settings > Secrets を確認してください。")
+    st.stop()
 GEMINI_API_KEY = "AIzaSyBjyTP93S-dFC5l0d7WbFfepLsf0WPAsWo"
 
 st.set_page_config(page_title="AI Trainer Pro: Ultimate", layout="wide")
@@ -290,4 +294,5 @@ with tabs[5]:
         with st.spinner("AIが考え中..."):
             res = model.generate_content(inputs)
             st.session_state.messages.append({"role": "assistant", "content": res.text})
+
             with st.chat_message("assistant"): st.markdown(res.text)
