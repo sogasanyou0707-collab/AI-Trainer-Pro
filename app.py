@@ -9,22 +9,27 @@ import requests
 from streamlit_gsheets import GSheetsConnection
 
 # ==========================================
-# 1. 基本設定（ここを書き換えてください）
+# 1. Secretsから設定を読み込む
 # ==========================================
-# Googleスプレッドシートの「共有」設定で、サービスアカウントのメールアドレスを「編集者」にするのを忘れずに！
+
+# ① Gemini APIキーの取得
+if "GEMINI_API_KEY" in st.secrets:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+else:
+    st.error("Secretsに GEMINI_API_KEY が設定されていません。")
+    st.stop()
+
+genai.configure(api_key=API_KEY)
+
+# ② スプレッドシートURLの取得
 if "connections" in st.secrets and "gsheets" in st.secrets.connections:
     SPREADSHEET_URL = st.secrets.connections.gsheets.spreadsheet
 else:
-    st.error("Secretsの設定が読み込めません。Settings > Secrets を確認してください。")
+    st.error("SecretsにスプレッドシートのURL（spreadsheet）が設定されていません。")
     st.stop()
-GEMINI_API_KEY = "AIzaSyBjyTP93S-dFC5l0d7WbFfepLsf0WPAsWo"
 
-st.set_page_config(page_title="AI Trainer Pro: Ultimate", layout="wide")
-genai.configure(api_key=GEMINI_API_KEY)
-
-# Googleスプレッドシート接続（シンプルに初期化）
+# ③ Googleスプレッドシート接続（初期化）
 conn = st.connection("gsheets", type=GSheetsConnection)
-
 # ==========================================
 # 2. データ読み書き関数
 # ==========================================
@@ -296,3 +301,4 @@ with tabs[5]:
             st.session_state.messages.append({"role": "assistant", "content": res.text})
 
             with st.chat_message("assistant"): st.markdown(res.text)
+
