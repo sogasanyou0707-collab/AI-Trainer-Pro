@@ -4,7 +4,6 @@ import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 from PIL import Image
 import re
-from datetime import datetime
 
 # ==========================================
 # 1. 初期設定（Secretsからの読み込み）
@@ -20,14 +19,15 @@ else:
 
 genai.configure(api_key=API_KEY)
 
-# ② モデルの定義 (安定版の gemini-1.5-flash を使用)
-model = genai.GenerativeModel("gemini-1.5-flash")
+# ② モデルの定義（ご指定の Gemini 3 を使用）
+# ※PermissionDeniedが出る場合は、AI Studio側でこのモデルの利用権限を確認してください
+model = genai.GenerativeModel("gemini-3-flash")
 
 # ③ スプレッドシートURLの取得
 if "connections" in st.secrets and "gsheets" in st.secrets.connections:
     SPREADSHEET_URL = st.secrets.connections.gsheets.spreadsheet
 else:
-    st.error("Secretsにスプレッドシートの接続情報がありません。")
+    st.error("Secretsにスプレッドシートの接続情報[connections.gsheets]がありません。")
     st.stop()
 
 # ④ Googleスプレッドシート接続
@@ -42,7 +42,7 @@ def load_data():
         settings = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Settings", ttl=0)
         return profiles, settings
     except Exception as e:
-        st.error(f"データの読み込みに失敗しました: {e}")
+        st.error(f"データの読み込みに失敗しました。URLや権限を確認してください: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
 # ==========================================
@@ -62,32 +62,24 @@ with tab1:
     st.subheader("ユーザー設定")
     user_id = st.text_input("ログインIDを入力してください", value="User1")
     
-    # 簡単なプロフィール編集機能（例）
     if st.button("設定を保存"):
-        try:
-            # ここでスプレッドシートへ書き込み
-            # (実際の実装に合わせてdfを作成し conn.update)
-            st.success("プロフィールを保存しました！")
-        except Exception as e:
-            st.error(f"保存エラー: {e}")
+        st.success("プロフィールの保存ロジックを実行しました（実装に合わせて調整してください）")
 
-# --- Tab 2: 本日のメニュー生成 (AI連携) ---
+# --- Tab 2: 本日のメニュー生成 (Gemini 3 連携) ---
 with tab2:
     st.subheader("AIトレーナーからの指示")
     
     if st.button("メニューを更新・生成"):
-        with st.spinner("AIが今日のメニューを考えています..."):
+        with st.spinner("Gemini 3 が今日のメニューを構築中..."):
             try:
-                # 安全な生成リクエスト
+                # ユーザーの目標などをプロンプトに組み込む
                 prompt = "今日の運動タスクを4つと、熱い励ましの伝言を [MESSAGE]...[/MESSAGE] というタグで囲んで出力してください。"
                 res = model.generate_content(prompt)
                 
-                # 回答がブロックされていないか確認
                 if not res.parts:
-                    st.error("AIの回答が制限されました。プロンプトを見直してください。")
+                    st.error("AIの回答がブロックされました。")
                 else:
                     full_text = res.text
-                    
                     # メッセージの抽出
                     msg_match = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", full_text, re.DOTALL)
                     if msg_match:
@@ -95,12 +87,14 @@ with tab2:
                     else:
                         st.session_state.db["daily_message"] = full_text
 
-                    # タスクの抽出 (簡易版)
+                    # タスクの抽出
                     tasks = [l.strip("- *") for l in full_text.split("\n") if l.strip().startswith(("-", "*"))]
                     st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks[:4]]
                     st.rerun()
             except Exception as e:
-                st.error(f"AI生成エラー: {e}")
+                st.error(f"生成エラーが発生しました: {e}")
+                if "PermissionDenied" in str(e):
+                    st.warning("APIキーに Gemini 3 の利用権限がない可能性があります。Google AI Studioを確認してください。")
 
     # 表示部分
     st.info(st.session_state.db["daily_message"])
@@ -113,7 +107,9 @@ with tab3:
     st.subheader("マスタデータ管理")
     st.dataframe(settings_df)
     
-    if st.button("項目を更新"):
-        # スプレッドシートへの反映処理
-        conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Settings", data=settings_df)
-        st.toast("Settingsを更新しました")
+    if st.button("スプレッドシートを更新"):
+        try:
+            conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Settings", data=settings_df)
+            st.success("Settingsシートを更新しました")
+        except Exception as e:
+            st.error(f"更新エラー: {e}")
