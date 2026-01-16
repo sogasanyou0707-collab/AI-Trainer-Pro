@@ -6,7 +6,7 @@ from datetime import datetime
 
 # --- 設定 ---
 # Gemini APIの設定（Secretsから読み込み）
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 # 指定されたモデルに変更
 model = genai.GenerativeModel('gemini-3-flash-preview')
 
@@ -127,3 +127,4 @@ elif menu == "⚙️ 設定":
 else:
     st.header(menu)
     st.write(f"「{menu}」機能は現在開発中です。")
+
