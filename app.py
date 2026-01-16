@@ -1,77 +1,61 @@
 import streamlit as st
 import datetime
 
-# --- 1. CSSによるモバイル微調整 ---
+# --- CSS: スマホでも縦に並ばせないための設定 ---
 st.markdown("""
     <style>
-    /* 1画面に情報を収めるための余白調整 */
-    .block-container { padding-top: 1rem; padding-bottom: 1rem; }
-    /* カード風の見た目 */
-    .status-card {
-        background-color: #f0f2f6;
-        border-radius: 10px;
-        padding: 15px;
-        margin-bottom: 10px;
-        border-left: 5px solid #ff4b4b;
+    /* 横スクロール可能なコンテナ */
+    .scroll-container {
+        display: flex;
+        overflow-x: auto;
+        gap: 15px;
+        padding: 10px 5px;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch; /* iOSのスクロールを滑らかに */
     }
+    /* 各日付のカード */
+    .day-card {
+        min-width: 55px;
+        text-align: center;
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 10px 5px;
+        box-shadow: 0px 2px 4px rgba(0,0,0,0.1);
+        border: 1px solid #eee;
+    }
+    .day-label { font-size: 0.7rem; color: #666; margin-bottom: 5px; }
+    .day-status { font-size: 1.2rem; margin: 5px 0; }
+    .day-num { font-size: 0.9rem; font-weight: bold; }
+    /* 練習した日の強調 */
+    .done { background-color: #e6f9ec; border-color: #28a745; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. ユーザー選択・登録セクション ---
-st.title("🏀 AI Basketball Coach")
-
-# 本来はGoogle Sheetsから取得するデータを想定
-user_list = ["息子さん", "ユーザーB"] 
-selected_user = st.selectbox("👤 ユーザーを選択", user_list, help="登録済みのユーザーを切り替えます")
-
-# 新規登録はエクスパンダーで「隠して」おく（画面を広く使うため）
-with st.expander("✨ 新規ユーザーを登録する"):
-    with st.form("new_user_form"):
-        new_name = st.text_input("名前を入力")
-        new_goal = st.text_input("目標（例：ハンドリング20秒切り）")
-        if st.form_submit_button("登録実行"):
-            st.success(f"{new_name}さんを登録しました！")
-
-st.divider()
-
-# --- 3. トップ画で見える「現在のステータス」 ---
-# サイドバーからメイン画面のトップへ移動
-col1, col2 = st.columns(2)
-
-with col1:
-    st.markdown(f"""
-        <div class="status-card">
-            <small>現在のコーチ</small><br>
-            <strong>🔥 安西コーチ</strong>
-        </div>
-    """, unsafe_allow_html=True)
-
-with col2:
-    # Google SheetsのProfilesから取得した目標を表示
-    current_goal = "ハンドリングスピード 18秒台！" 
-    st.markdown(f"""
-        <div class="status-card">
-            <small>現在の目標</small><br>
-            <strong>🎯 {current_goal}</strong>
-        </div>
-    """, unsafe_allow_html=True)
-
-st.divider()
-
-# --- 4. 視認性を上げた「カード型カレンダー」 ---
 st.subheader("🗓️ 今週の進捗")
 
-# 直近7日間の日付を生成
+# データ準備（本来はスプレッドシートから取得）
 today = datetime.date.today()
 days = [(today - datetime.timedelta(days=i)) for i in range(6, -1, -1)]
+# 仮の達成データ（Metricsシートのデータと照合する想定）
+done_days = [True, False, True, True, False, True, True] 
 
-# モバイルでは横並びは限界があるため、4列（または2列×2段）で表示
-cols = st.columns(7) # 1週間分
+# --- HTMLの組み立て ---
+html_str = '<div class="scroll-container">'
 for i, day in enumerate(days):
-    with cols[i]:
-        # 達成率に応じた色判定（仮）
-        is_done = (i % 2 == 0) # 偶数日は練習したことにする
-        color = "🟢" if is_done else "⚪"
-        st.markdown(f"<div style='text-align: center;'><small>{day.strftime('%a')}</small><br>{color}<br><b>{day.day}</b></div>", unsafe_allow_html=True)
+    is_done = done_days[i]
+    status_icon = "🏀" if is_done else "⚪"
+    status_class = "day-card done" if is_done else "day-card"
+    
+    html_str += f"""
+        <div class="{status_class}">
+            <div class="day-label">{day.strftime('%a')}</div>
+            <div class="day-status">{status_icon}</div>
+            <div class="day-num">{day.day}</div>
+        </div>
+    """
+html_str += '</div>'
 
-st.info("💡 各日付をタップすると詳細（コーチのフィードバック）を確認できます。")
+# 描画
+st.markdown(html_str, unsafe_allow_html=True)
+
+st.info("💡 横にスワイプして過去の記録を確認できます")
