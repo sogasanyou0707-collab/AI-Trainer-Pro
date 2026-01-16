@@ -10,7 +10,7 @@ from PIL import Image
 from streamlit_gsheets import GSheetsConnection
 
 # --- 1. 初期設定 ---
-st.set_page_config(page_title="AI Trainer Pro: Professional Beta", layout="wide")
+st.set_page_config(page_title="AI Trainer Pro: Ultimate v1.1", layout="wide")
 
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -32,9 +32,9 @@ def get_available_models():
 
 available_models = get_available_models()
 
-# --- 2. データ読み書き関数 (復元ロジックを最強化) ---
+# --- 2. データ読み書き関数 (列名の曖昧さを解消) ---
 def load_full_data_gs(user_id):
-    u_id = str(user_id)
+    u_id = str(user_id).strip().lower() # 照合用に正規化
     default_data = {
         "profile": {"height": 170.0, "weight": 65.0, "goal": "バスケのスキルアップ"},
         "history": {}, "notes": {}, "metrics_data": pd.DataFrame(), "metrics_defs": ["体重"],
@@ -42,56 +42,77 @@ def load_full_data_gs(user_id):
         "daily_message": "今日も最高の練習を！", "tasks": [], "roadmap": ""
     }
     try:
-        # シートの一括読み込み (ttl=0で最新を取得)
-        p_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Profiles", ttl=0)
-        h_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="History", ttl=0)
-        m_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Metrics", ttl=0)
-        s_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Settings", ttl=0)
+        # シートを読み込み、列名を小文字に統一
+        def read_normalized(ws_name):
+            df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=ws_name, ttl=0)
+            df.columns = [c.lower().strip() for c in df.columns] # 全ての列名を小文字＋空白除去
+            return df
 
-        # Profilesから基本設定・伝言・ロードマップを復元
-        prof = p_df[p_df['user_id'].astype(str) == u_id].to_dict('records')
+        p_df = read_normalized("Profiles")
+        h_df = read_normalized("History")
+        m_df = read_normalized("Metrics")
+        s_df = read_normalized("Settings")
+
+        # Profilesの復元 (user_idが一致する行を探す)
+        p_df['user_id_norm'] = p_df['user_id'].astype(str).str.lower().str.strip()
+        prof = p_df[p_df['user_id_norm'] == u_id].to_dict('records')
+        
         if prof:
             p = prof[0]
             default_data["profile"] = {"height": p.get('height', 170), "weight": p.get('weight', 65), "goal": p.get('goal', "未設定")}
             default_data["line"] = {"token": p.get('line_token', ""), "uid": p.get('line_user_id', ""), "en": p.get('line_enabled', False)}
             default_data["daily_message"] = p.get('daily_message', "準備はいいか！")
-            # 【重要】ロードマップを文字列として復元
-            default_data["roadmap"] = str(p.get('roadmap', ""))
+            
+            # 【復元ポイント】ロードマップを確実に取得
+            roadmap_val = p.get('roadmap', "")
+            default_data["roadmap"] = str(roadmap_val) if pd.notna(roadmap_val) else ""
+            
             t_json = p.get('tasks_json', "[]")
             default_data["tasks"] = json.loads(t_json) if t_json and t_json != "nan" else []
 
-        # 歴史とメモの復元
+        # 歴史・メモ
         if not h_df.empty:
-            sub_h = h_df[h_df['user_id'].astype(str) == u_id]
+            h_df['user_id_norm'] = h_df['user_id'].astype(str).str.lower().str.strip()
+            sub_h = h_df[h_df['user_id_norm'] == u_id]
             default_data["history"] = sub_h.set_index('date')['rate'].to_dict()
             default_data["notes"] = sub_h.set_index('date')['note'].to_dict()
 
-        # グラフ用データの復元
+        # グラフデータ
         if not m_df.empty:
-            default_data["metrics_data"] = m_df[m_df['user_id'].astype(str) == u_id]
+            m_df['user_id_norm'] = m_df['user_id'].astype(str).str.lower().str.strip()
+            default_data["metrics_data"] = m_df[m_df['user_id_norm'] == u_id]
 
-        # 【最重要】Settingsから項目名（ハンドリングスピード等）をすべて復元
+        # 【復元ポイント】Settingsから追加項目を確実に復元
         if not s_df.empty:
-            user_items = s_df[s_df['user_id'].astype(str) == u_id]['metric_defs'].dropna().unique().tolist()
+            s_df['user_id_norm'] = s_df['user_id'].astype(str).str.lower().str.strip()
+            user_items = s_df[s_df['user_id_norm'] == u_id]['metric_defs'].dropna().unique().tolist()
             if user_items:
                 default_data["metrics_defs"] = sorted(user_items)
 
         return default_data
     except Exception as e:
-        st.warning(f"データ復元中にエラーが発生しました。初期設定で開始します: {e}")
+        st.error(f"読み込みエラー: {e}")
         return default_data
 
 def save_to_gs(worksheet_name, new_df, key_cols=['user_id', 'date']):
     try:
+        # 保存前に全ての列名を小文字にする
+        new_df.columns = [c.lower().strip() for c in new_df.columns]
         existing_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=worksheet_name, ttl=0)
-        combined = pd.concat([existing_df, new_df], ignore_index=True).drop_duplicates(subset=key_cols, keep='last')
+        existing_df.columns = [c.lower().strip() for c in existing_df.columns]
+        
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
+        # キーの重複を排除（最新を保持）
+        key_cols = [k.lower().strip() for k in key_cols]
+        combined = combined.drop_duplicates(subset=key_cols, keep='last')
+        
         conn.update(spreadsheet=SPREADSHEET_URL, worksheet=worksheet_name, data=combined)
         return True
     except Exception as e:
         st.error(f"保存エラー ({worksheet_name}): {e}")
         return False
 
-# --- 3. ログイン & コーチ設定 ---
+# --- 3. ログイン & セッション ---
 st.sidebar.title("🔑 ログイン")
 login_id = st.sidebar.text_input("ユーザーIDを入力", value="User1").strip()
 
@@ -101,9 +122,9 @@ if "current_user" not in st.session_state or st.session_state.current_user != lo
 
 selected_coach = st.sidebar.selectbox("🤖 コーチ選択", ["バスケットコーチ", "熱血コーチ", "論理派"])
 selected_model = st.sidebar.selectbox("AIモデル", available_models, index=0)
-model = genai.GenerativeModel(selected_model, system_instruction=f"あなたは{selected_coach}です。小6男子にバスケを教えています。目標:{st.session_state.db['profile']['goal']}")
+model = genai.GenerativeModel(selected_model, system_instruction=f"あなたは{selected_coach}です。目標:{st.session_state.db['profile']['goal']}")
 
-# --- 4. サイドバー設定 ---
+# --- 4. サイドバー設定 (保存機能) ---
 with st.sidebar.expander("👤 プロフィール・LINE設定"):
     p_d = st.session_state.db["profile"]
     h_v = st.number_input("身長 (cm)", value=float(p_d["height"]))
@@ -114,14 +135,13 @@ with st.sidebar.expander("👤 プロフィール・LINE設定"):
     l_ui = st.text_input("宛先UID", value=st.session_state.db["line"]["uid"])
     
     if st.button("全設定を保存"):
-        # 全ての状態をProfilesに詰め込む
         t_json = json.dumps(st.session_state.db["tasks"], ensure_ascii=False)
         df_p = pd.DataFrame([{
             "user_id": login_id, "height": h_v, "weight": w_v, "goal": g_v,
             "line_token": l_at, "line_user_id": l_ui, "line_enabled": l_en,
             "daily_message": st.session_state.db["daily_message"], 
             "tasks_json": t_json, 
-            "roadmap": st.session_state.db["roadmap"] # ロードマップも保存
+            "roadmap": st.session_state.db["roadmap"]
         }])
         if save_to_gs("Profiles", df_p, key_cols=['user_id']):
             st.session_state.db["profile"] = {"height": h_v, "weight": w_v, "goal": g_v}
@@ -133,6 +153,7 @@ with st.sidebar.expander("📊 記録項目の管理"):
         if new_m not in st.session_state.db["metrics_defs"]:
             st.session_state.db["metrics_defs"].append(new_m)
             df_s = pd.DataFrame({"user_id": [login_id]*len(st.session_state.db["metrics_defs"]), "metric_defs": st.session_state.db["metrics_defs"]})
+            # Settingsは全入れ替えではなく追加保存
             save_to_gs("Settings", df_s, key_cols=['user_id', 'metric_defs'])
             st.rerun()
 
@@ -140,33 +161,16 @@ with st.sidebar.expander("📊 記録項目の管理"):
 tabs = st.tabs(["📅 カレンダー", "📋 メニュー", "📈 グラフ", "🚀 ロードマップ", "💬 相談"])
 today = datetime.date.today()
 
-with tabs[0]: # カレンダー
-    cal = calendar.monthcalendar(today.year, today.month)
-    cols_h = st.columns(7)
-    for i, d in enumerate(["月", "火", "水", "木", "金", "土", "日"]): cols_h[i].write(f"**{d}**")
-    for week in cal:
-        cols = st.columns(7)
-        for i, day in enumerate(week):
-            if day != 0:
-                d_str = f"{today.year}-{today.month:02d}-{day:02d}"
-                rate = st.session_state.db["history"].get(d_str, -1)
-                color = "#FF4B4B" if float(rate) >= 0.8 else "gray" if rate == -1 else "#007BFF"
-                cols[i].markdown(f'<div style="background:{color};color:white;padding:10px;text-align:center;border-radius:5px;">{day}</div>', unsafe_allow_html=True)
-    st.divider()
-    sel_date = st.date_input("詳細を見る日付", value=today)
-    if str(sel_date) in st.session_state.db["notes"]:
-        st.info(f"📝 **メモ:** {st.session_state.db['notes'][str(sel_date)]}")
-
 with tabs[1]: # 今日のメニュー
     st.info(f"**【コーチより】**\n{st.session_state.db.get('daily_message', '生成してください')}")
     if st.button("AIメニュー生成"):
-        res = model.generate_content("バスケ練習タスク4つと励ましを [MESSAGE]...[/MESSAGE] で出力。")
+        res = model.generate_content("バスケ練習タスク4つと励ましを [MESSAGE]...[/MESSAGE] で。")
         st.session_state.db["daily_message"] = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", res.text, re.DOTALL).group(1).strip()
         tasks = [l.strip("- *123. ") for l in res.text.split("\n") if l.strip().startswith(("-", "*", "1."))]
         st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks][:4]
-        # 生成直後にProfilesへ保存
+        # 即時保存
         t_json = json.dumps(st.session_state.db["tasks"], ensure_ascii=False)
-        df_p = pd.DataFrame([{"user_id": login_id, "daily_message": st.session_state.db["daily_message"], "tasks_json": t_json}])
+        df_p = pd.DataFrame([{"user_id": login_id, "daily_message": st.session_state.db["daily_message"], "tasks_json": t_json, "roadmap": st.session_state.db["roadmap"]}])
         save_to_gs("Profiles", df_p, key_cols=['user_id'])
         st.rerun()
     
@@ -188,19 +192,8 @@ with tabs[1]: # 今日のメニュー
         save_to_gs("Profiles", pd.DataFrame([{"user_id": login_id, "daily_message": st.session_state.db["daily_message"], "tasks_json": t_json, "roadmap": st.session_state.db["roadmap"]}]), key_cols=['user_id'])
         save_to_gs("History", pd.DataFrame([{"user_id": login_id, "date": str(today), "rate": rate, "note": free_note}]))
         save_to_gs("Metrics", pd.DataFrame([{"user_id": login_id, "date": str(today), "metric_name": k, "value": v} for k, v in today_metrics.items()]), key_cols=['user_id', 'date', 'metric_name'])
-        if l_en and l_at:
-            requests.post("https://api.line.me/v2/bot/message/push", headers={"Authorization": f"Bearer {l_at}", "Content-Type": "application/json"}, json={"to": l_ui, "messages": [{"type": "text", "text": f"達成率{int(rate*100)}%\nメモ:{free_note}\n数値:{today_metrics}"}]})
-        st.success("全てのスプレッドシートへ保存完了！")
+        st.success("保存完了！")
         st.rerun()
-
-with tabs[2]: # グラフ
-    m_data = st.session_state.db.get("metrics_data", pd.DataFrame())
-    if not m_data.empty:
-        sel_metric = st.selectbox("グラフ表示項目", st.session_state.db["metrics_defs"])
-        plot_df = m_data[m_data['metric_name'] == sel_metric].copy()
-        if not plot_df.empty:
-            plot_df['date'] = pd.to_datetime(plot_df['date'])
-            st.line_chart(plot_df.sort_values('date').set_index('date')['value'])
 
 with tabs[3]: # ロードマップ
     if st.button("AIロードマップ生成"):
@@ -208,14 +201,19 @@ with tabs[3]: # ロードマップ
         match = re.search(r"```mermaid\s*(.*?)\s*```", res.text, re.DOTALL)
         if match:
             st.session_state.db["roadmap"] = match.group(1)
-            # 保存
-            df_p = pd.DataFrame([{"user_id": login_id, "roadmap": st.session_state.db["roadmap"]}])
+            #Profilesへ確実に保存
+            df_p = pd.DataFrame([{"user_id": login_id, "roadmap": st.session_state.db["roadmap"], "tasks_json": json.dumps(st.session_state.db["tasks"])}])
             save_to_gs("Profiles", df_p, key_cols=['user_id'])
+            st.success("ロードマップを保存しました")
             st.rerun()
+    
     if st.session_state.db.get("roadmap"):
-        st.components.v1.html(f'<div class="mermaid" style="display:flex;justify-content:center;">{st.session_state.db["roadmap"]}</div><script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";mermaid.initialize({{startOnLoad:true}});</script>', height=500)
-
-with tabs[4]: # 相談
-    chat_in = st.chat_input("相談を入力")
-    if chat_in:
-        st.chat_message("assistant").write(model.generate_content(chat_in).text)
+        st.components.v1.html(f"""
+            <div class="mermaid" style="display:flex;justify-content:center;">
+                {st.session_state.db["roadmap"]}
+            </div>
+            <script type="module">
+                import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+                mermaid.initialize({{ startOnLoad: true, theme: 'neutral' }});
+            </script>
+        """, height=500)
