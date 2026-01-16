@@ -1,124 +1,206 @@
 import streamlit as st
 import google.generativeai as genai
-import pandas as pd
-from streamlit_gsheets import GSheetsConnection
 import re
+from PIL import Image
+import datetime
+import calendar
+import pandas as pd
+import requests
+from streamlit_gsheets import GSheetsConnection
 
-# --- 1. ページ設定 ---
-st.set_page_config(page_title="AI Trainer Pro", layout="wide")
-st.title("🏃‍♂️ AI Trainer Pro")
+# ==========================================
+# 1. ページ基本設定 ＆ Secrets読み込み
+# ==========================================
+st.set_page_config(page_title="AI Trainer Pro: Ultimate", layout="wide")
 
-# --- 2. 接続設定 ---
 try:
+    # Secretsから各種情報を取得
     API_KEY = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel("gemini-3-flash-preview")
-
     SPREADSHEET_URL = st.secrets.connections.gsheets.spreadsheet
+    
+    # Gemini設定 (Gemini 3を指定)
+    genai.configure(api_key=API_KEY)
+    # 接続テストも兼ねてモデルを定義
+    model_name = "gemini-3-flash-preview"
+    
+    # スプレッドシート接続初期化
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
-    st.error(f"接続設定エラー: {e}")
+    st.error(f"初期設定エラー: Secretsやネットワークを確認してください。 {e}")
     st.stop()
 
-# --- 3. データ処理関数 ---
-def load_data():
+# ==========================================
+# 2. データ読み書き関数 (列名不一致対策済み)
+# ==========================================
+
+def load_full_data_gs(user_id):
+    """スプレッドシートからユーザーデータを一括取得"""
+    default_data = {
+        "profile": {"height": 170.0, "weight": 65.0, "goal": "未設定"},
+        "history": {},
+        "metrics_data": pd.DataFrame(),
+        "metrics_defs": ["体重"],
+        "line_config": {"access_token": "", "user_id": "", "enabled": False},
+        "daily_message": "準備はいいか！限界を超えていこう！",
+        "tasks": [], "roadmap": ""
+    }
     try:
-        df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Profiles", ttl=0)
-        df.columns = df.columns.str.strip() # 空白除去
-        return df
-    except Exception as e:
-        st.error(f"データ読み込みエラー: {e}")
-        return pd.DataFrame()
+        # 各シートの読み込み（列名は小文字 user_id で統一）
+        p_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Profiles", ttl=0)
+        h_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="History", ttl=0)
+        m_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Metrics", ttl=0)
+        s_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Settings", ttl=0)
 
-# --- 4. メイン画面 ---
-tab1, tab2, tab3 = st.tabs(["プロフィール", "カレンダー", "項目管理"])
+        # データのフィルタリング (user_id が一致するもの)
+        prof = p_df[p_df['user_id'].astype(str) == str(user_id)].to_dict('records')
+        hist = h_df[h_df['user_id'].astype(str) == str(user_id)]
+        metr = m_df[m_df['user_id'].astype(str) == str(user_id)]
+        sett = s_df[s_df['user_id'].astype(str) == str(user_id)]
 
-# --- Tab 1: プロフィール ---
-with tab1:
-    st.subheader("👤 ユーザー設定")
-    df = load_data()
-    
-    input_id = st.text_input("ログインIDを入力してください", value="")
+        if prof:
+            p = prof[0]
+            default_data["profile"] = {"height": p.get('height', 170), "weight": p.get('weight', 65), "goal": p.get('goal', "未設定")}
+            default_data["line_config"] = {
+                "access_token": p.get('line_token', ""),
+                "user_id": p.get('line_user_id', ""),
+                "enabled": p.get('line_enabled', False)
+            }
+            default_data["daily_message"] = p.get('daily_message', "準備はいいか！")
 
-    if input_id:
-        # 【重要】実際のスプレッドシートに合わせて「user_id」を使用
-        target_col = "user_id" 
+        if not hist.empty:
+            default_data["history"] = hist.set_index('date')['rate'].to_dict()
         
-        if target_col not in df.columns:
-            st.error(f"列名エラー: スプレッドシートの1行目を 'user_id' に修正してください。現在の列名: {list(df.columns)}")
-        else:
-            user_data = df[df[target_col].astype(str) == str(input_id)]
-            is_new_user = user_data.empty
+        if not metr.empty:
+            default_data["metrics_data"] = metr
             
-            if not is_new_user:
-                st.success(f"{input_id} さんのデータを読み込みました")
-                row = user_data.iloc[0]
-                # スプレッドシートに合わせて小文字のキーで取得（無い場合はデフォルト値）
-                h_val = row.get("height", 170.0)
-                w_val = row.get("weight", 60.0)
-                g_val = row.get("goal", "")
-            else:
-                st.warning(f"ID: {input_id} は未登録です。新規登録を行います。")
-                h_val, w_val, g_val = 170.0, 60.0, "ここに目標を入力"
+        if not sett.empty:
+            default_data["metrics_defs"] = sett['metric_defs'].unique().tolist()
 
-            # フォーム表示（年齢はスプレッドシートに無いため、一旦目標と身体データのみ）
-            col1, col2 = st.columns(2)
-            with col1:
-                new_height = st.number_input("身長 (cm)", value=float(h_val))
-                new_weight = st.number_input("体重 (kg)", value=float(w_val))
-            with col2:
-                new_goal = st.text_area("目標", value=str(g_val))
+        return default_data
+    except Exception as e:
+        return default_data
 
-            if st.button("スプレッドシートに保存"):
-                # 新しい行の作成（列名をスプレッドシートに合わせる）
-                new_entry = {
-                    "user_id": input_id,
-                    "height": new_height,
-                    "weight": new_weight,
-                    "goal": new_goal
-                }
-                
-                if is_new_user:
-                    updated_df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
-                else:
-                    # 既存行の更新
-                    df.loc[df["user_id"].astype(str) == str(input_id), ["height", "weight", "goal"]] = [new_height, new_weight, new_goal]
-                    updated_df = df
-                
-                try:
-                    conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Profiles", data=updated_df)
-                    st.balloons()
-                    st.success("保存が完了しました！")
-                except Exception as e:
-                    st.error(f"更新エラー: {e}")
+def save_to_gs(worksheet_name, new_df, key_cols=['user_id', 'date']):
+    """スプレッドシートの指定シートを更新"""
+    try:
+        existing_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=worksheet_name, ttl=0)
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
+        if key_cols:
+            combined = combined.drop_duplicates(subset=key_cols, keep='last')
+        conn.update(spreadsheet=SPREADSHEET_URL, worksheet=worksheet_name, data=combined)
+        return True
+    except Exception as e:
+        st.error(f"保存エラー ({worksheet_name}): {e}")
+        return False
 
-# --- Tab 2: カレンダー ---
-with tab2:
-    st.subheader("🗓 今日のメニュー生成")
-    if "db" not in st.session_state:
-        st.session_state.db = {"daily_message": "生成ボタンを押してください", "tasks": []}
+# ==========================================
+# 3. ログイン管理
+# ==========================================
 
-    target_goal = new_goal if 'new_goal' in locals() else "健康維持"
+st.sidebar.title("🔑 ログイン")
+login_id = st.sidebar.text_input("ユーザーIDを入力", value="User1").strip()
 
-    if st.button("Gemini 3 でメニュー生成"):
-        with st.spinner("Gemini 3 が考案中..."):
-            try:
-                prompt = f"目標「{target_goal}」に適した運動タスクを4つと、励ましを [MESSAGE]...[/MESSAGE] で出力してください。"
-                res = model.generate_content(prompt)
-                full_text = res.text
-                msg_match = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", full_text, re.DOTALL)
-                st.session_state.db["daily_message"] = msg_match.group(1).strip() if msg_match else full_text
-                tasks = [l.strip("- *") for l in full_text.split("\n") if l.strip().startswith(("-", "*"))]
-                st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks[:4]]
-                st.rerun()
-            except Exception as e:
-                st.error(f"AI生成エラー: {e}")
+if "current_user" not in st.session_state or st.session_state.get("current_user") != login_id:
+    st.session_state.db = load_full_data_gs(login_id)
+    st.session_state.current_user = login_id
 
-    st.info(st.session_state.db["daily_message"])
+# AIコーチ設定
+selected_coach = st.sidebar.selectbox("コーチ選択", ["熱血コーチ", "論理派トレーナー"])
+uploaded_file = st.sidebar.file_uploader("写真分析 (食事・フォーム等)", type=["jpg", "jpeg", "png"])
+ai_model = genai.GenerativeModel(model_name, system_instruction=f"あなたは{selected_coach}です。ユーザー:{login_id}、目標:{st.session_state.db['profile']['goal']}")
+
+# ==========================================
+# 4. サイドバー設定メニュー
+# ==========================================
+
+with st.sidebar.expander("🎯 プロフィール設定"):
+    h_val = st.number_input("身長 (cm)", value=float(st.session_state.db["profile"]["height"]))
+    w_val = st.number_input("体重 (kg)", value=float(st.session_state.db["profile"]["weight"]))
+    g_val = st.text_area("目標", value=st.session_state.db["profile"]["goal"])
+    if st.button("プロフィールの保存"):
+        df = pd.DataFrame([{
+            "user_id": login_id, "height": h_val, "weight": w_val, "goal": g_val,
+            "line_token": st.session_state.db["line_config"]["access_token"],
+            "line_user_id": st.session_state.db["line_config"]["user_id"],
+            "line_enabled": st.session_state.db["line_config"]["enabled"],
+            "daily_message": st.session_state.db["daily_message"]
+        }])
+        if save_to_gs("Profiles", df, key_cols=['user_id']):
+            st.session_state.db["profile"] = {"height": h_val, "weight": w_val, "goal": g_val}
+            st.success("保存しました！")
+
+with st.sidebar.expander("📊 記録項目の管理"):
+    new_m = st.text_input("追加する項目")
+    if st.button("項目追加") and new_m:
+        if new_m not in st.session_state.db["metrics_defs"]:
+            st.session_state.db["metrics_defs"].append(new_m)
+            df = pd.DataFrame({"user_id": [login_id]*len(st.session_state.db["metrics_defs"]), "metric_defs": st.session_state.db["metrics_defs"]})
+            conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Settings", data=df)
+            st.rerun()
+
+# ==========================================
+# 5. メイン画面
+# ==========================================
+
+st.title(f"🔥 AI Trainer Pro: {login_id}")
+tabs = st.tabs(["📅 カレンダー", "📋 メニュー", "📈 グラフ", "🏆 称号", "🚀 ロードマップ", "💬 相談"])
+today = datetime.date.today()
+
+# --- Tab 1: カレンダー ---
+with tabs[0]:
+    cal_grid = calendar.monthcalendar(today.year, today.month)
+    cols = st.columns(7)
+    for i, d in enumerate(["月", "火", "水", "木", "金", "土", "日"]): cols[i].centered_text = d
+    for week in cal_grid:
+        cols = st.columns(7)
+        for i, day in enumerate(week):
+            if day != 0:
+                d_key = f"{today.year}-{today.month:02d}-{day:02d}"
+                rate = st.session_state.db["history"].get(d_key, -1)
+                color = "#FF4B4B" if float(rate) >= 0.8 else "gray"
+                cols[i].markdown(f'<div style="border:1px solid #ddd;text-align:center;padding:5px;border-radius:5px;background-color:{color if rate != -1 else "transparent"};color:{"white" if rate != -1 else "black"};">{day}</div>', unsafe_allow_html=True)
+
+# --- Tab 2: 今日のメニュー ---
+with tabs[1]:
+    st.info(f"**コーチより:** {st.session_state.db['daily_message']}")
+    if st.button("メニュー生成"):
+        res = ai_model.generate_content("タスク4つと励ましを [MESSAGE]...[/MESSAGE] で出力して。")
+        st.session_state.db["daily_message"] = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", res.text, re.DOTALL).group(1).strip()
+        tasks = [l.strip("- *") for l in res.text.split("\n") if l.strip().startswith(("-", "*"))]
+        st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks[:4]]
+        st.rerun()
+
     for i, t in enumerate(st.session_state.db["tasks"]):
-        st.checkbox(t["task"], key=f"task_{i}")
+        st.session_state.db["tasks"][i]["done"] = st.checkbox(t["task"], value=t["done"], key=f"tk_{i}")
 
-# --- Tab 3: 項目管理 ---
-with tab3:
-    st.subheader("全データ確認")
-    st.dataframe(load_data())
+    if st.button("本日の成果を保存"):
+        done = sum(1 for t in st.session_state.db["tasks"] if t["done"])
+        rate = done / len(st.session_state.db["tasks"]) if st.session_state.db["tasks"] else 0
+        h_df = pd.DataFrame([{"user_id": login_id, "date": str(today), "rate": rate}])
+        save_to_gs("History", h_df)
+        st.balloons()
+        st.success("スプレッドシートに記録しました！")
+
+# --- Tab 5: ロードマップ (Mermaid) ---
+with tabs[4]:
+    if st.button("ロードマップ生成"):
+        res = ai_model.generate_content("目標達成への道筋をMermaid形式のmindmapで作成して。```mermaid...```で囲むこと。")
+        match = re.search(r"```mermaid\s*(.*?)\s*```", res.text, re.DOTALL)
+        if match: st.session_state.db["roadmap"] = match.group(1)
+    
+    if st.session_state.db.get("roadmap"):
+        st.components.v1.html(f"""
+            <div class="mermaid">{st.session_state.db["roadmap"]}</div>
+            <script type="module">
+                import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+                mermaid.initialize({{ startOnLoad: true }});
+            </script>
+        """, height=500)
+
+# --- Tab 6: 相談 (画像分析対応) ---
+with tabs[5]:
+    chat_input = st.chat_input("コーチに相談...")
+    if chat_input:
+        inputs = [chat_input, Image.open(uploaded_file)] if uploaded_file else [chat_input]
+        response = ai_model.generate_content(inputs)
+        st.write(f"**AIコーチ:** {response.text}")
