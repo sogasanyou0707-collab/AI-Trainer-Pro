@@ -146,18 +146,50 @@ with tabs[1]:
     st.info(f"**コーチからの伝言:** {st.session_state.db.get('daily_message', '準備はいいか！')}")
     
     if st.button("AIメニューを生成・更新"):
-        res = model.generate_content(f"目標:{st.session_state.db['profile']['goal']} に基づき、タスク4つと励ましを [MESSAGE]...[/MESSAGE] で出力。")
-        st.session_state.db["daily_message"] = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", res.text, re.DOTALL).group(1).strip()
-        tasks_found = [l.strip("- *1234. ") for l in res.text.split("\n") if l.strip().startswith(("-", "*", "1.", "2."))]
-        st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks_found[:4]]
-        st.rerun()
+        with st.spinner("AIが内容を構成中..."):
+            try:
+                # 安全性の設定（ブロックを最小限にする）
+                safety_settings = [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                ]
+                
+                # 生成リクエスト（モデル名を安定版の 1.5-flash に変えてテストすることをお勧めします）
+                # model_to_use = "gemini-3-flash-preview" # 現在の設定
+                model_to_use = "gemini-1.5-flash"        # ← もしエラーが続くならこちらを試してください
+                
+                temp_model = genai.GenerativeModel(model_to_use)
+                res = temp_model.generate_content(
+                    f"目標:{st.session_state.db['profile']['goal']} に基づき、タスク4つと励ましを [MESSAGE]...[/MESSAGE] で出力してください。",
+                    safety_settings=safety_settings
+                )
 
-    col_l, col_r = st.columns([2, 1])
-    with col_l:
-        st.subheader("✅ タスクチェック")
-        if not st.session_state.db["tasks"]:
-            st.warning("生成ボタンを押して今日のメニューを受け取ってください。")
-        else:
+                # 診断: AIの生の回答を確認
+                if not res.candidates:
+                    st.error("AIから回答が返ってきませんでした（モデル名が無効か、サーバーのエラーです）")
+                elif res.candidates[0].finish_reason != 1: # 1以外は異常終了
+                    st.warning(f"AIの回答が制限されました（理由コード: {res.candidates[0].finish_reason}）")
+                
+                # 正常な場合のみ処理
+                full_text = res.text
+                msg_match = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", full_text, re.DOTALL)
+                
+                if msg_match:
+                    st.session_state.db["daily_message"] = msg_match.group(1).strip()
+                else:
+                    st.session_state.db["daily_message"] = full_text
+
+                tasks_found = [l.strip("- *1234. ") for l in full_text.split("\n") if l.strip().startswith(("-", "*", "1.", "2."))]
+                if tasks_found:
+                    st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks_found[:4]]
+                
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"【診断エラー】: {e}")
+                st.info("もし 'Model not found' と出る場合は、モデル名を gemini-1.5-flash に変更してください。")
             # タスクの内容をチェックボックスの横に表示
             for i, t_item in enumerate(st.session_state.db["tasks"]):
                 st.session_state.db["tasks"][i]["done"] = st.checkbox(label=t_item["task"], value=t_item["done"], key=f"tk_{i}_{login_id}")
@@ -231,3 +263,4 @@ with tabs[4]:
         response = model.generate_content(inputs).text
         st.session_state.messages.append({"role": "assistant", "content": response})
         with st.chat_message("assistant"): st.markdown(response)
+
