@@ -10,7 +10,7 @@ from PIL import Image
 from streamlit_gsheets import GSheetsConnection
 
 # --- 1. ページ基本設定 ---
-st.set_page_config(page_title="AI Trainer Pro: Ultimate Edition", layout="wide")
+st.set_page_config(page_title="AI Trainer Pro: Ultimate", layout="wide")
 
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -33,13 +33,13 @@ def get_available_models():
 
 available_models = get_available_models()
 
-# --- 3. データ読み書き関数 (詳細メモの取得対応) ---
+# --- 3. データ読み書き関数 ---
 def load_full_data_gs(user_id):
     default_data = {
-        "profile": {"height": 170.0, "weight": 65.0, "goal": "未設定"},
+        "profile": {"height": 170.0, "weight": 65.0, "goal": "バスケの基礎力アップ"},
         "history": {}, "notes": {}, "metrics_data": pd.DataFrame(), "metrics_defs": ["体重"],
         "line": {"token": "", "uid": "", "en": False},
-        "daily_message": "準備はいいか！", "tasks": [], "roadmap": ""
+        "daily_message": "今日も最高の練習にしよう！", "tasks": [], "roadmap": ""
     }
     try:
         p_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Profiles", ttl=0)
@@ -55,22 +55,22 @@ def load_full_data_gs(user_id):
             default_data["profile"] = {"height": p.get('height', 170), "weight": p.get('weight', 65), "goal": p.get('goal', "未設定")}
             default_data["line"] = {"token": p.get('line_token', ""), "uid": p.get('line_user_id', ""), "en": p.get('line_enabled', False)}
             default_data["daily_message"] = p.get('daily_message', "準備はいいか！")
-            # タスク状態の復元
             t_json = p.get('tasks_json', "[]")
             default_data["tasks"] = json.loads(t_json) if t_json else []
 
         if not h_df.empty:
             user_hist = h_df[h_df['user_id'].astype(str) == u_id]
             default_data["history"] = user_hist.set_index('date')['rate'].to_dict()
-            # 【新機能】日付ごとのメモ(note)を辞書に保存
             default_data["notes"] = user_hist.set_index('date')['note'].to_dict()
             
         if not m_df.empty:
             default_data["metrics_data"] = m_df[m_df['user_id'].astype(str) == u_id]
             
         if not s_df.empty:
+            # ここで Settings シートから項目を読み込む
             raw_defs = s_df[s_df['user_id'].astype(str) == u_id]['metric_defs'].dropna().tolist()
-            default_data["metrics_defs"] = sorted(list(set(raw_defs)))
+            if raw_defs:
+                default_data["metrics_defs"] = sorted(list(set(raw_defs)))
         
         return default_data
     except:
@@ -85,7 +85,7 @@ def save_to_gs(worksheet_name, new_df, key_cols=['user_id', 'date']):
     except:
         return False
 
-# --- 4. ログイン & 設定 ---
+# --- 4. ログイン ＆ コーチ選択 ---
 st.sidebar.title("🔑 AI Trainer Pro")
 login_id = st.sidebar.text_input("ユーザーIDを入力", value="User1").strip()
 
@@ -93,52 +93,66 @@ if "current_user" not in st.session_state or st.session_state.current_user != lo
     st.session_state.db = load_full_data_gs(login_id)
     st.session_state.current_user = login_id
 
-# コーチとモデルの選択
-selected_coach = st.sidebar.selectbox("🤖 コーチを選択", ["熱血コーチ", "論理派トレーナー", "バスケットボール専門コーチ"])
+selected_coach = st.sidebar.selectbox("🤖 コーチを選択", ["バスケットボール専門コーチ", "熱血コーチ", "論理派トレーナー"])
 selected_model = st.sidebar.selectbox("AIモデル", available_models, index=0)
-model = genai.GenerativeModel(selected_model, system_instruction=f"あなたは{selected_coach}です。目標:{st.session_state.db['profile']['goal']}")
+
+# システムプロンプトに子供向け・バスケ向けの要素を付加
+model = genai.GenerativeModel(
+    selected_model, 
+    system_instruction=f"あなたは{selected_coach}です。小学校6年生の男子が、自宅で毎日楽しく続けられるバスケットボールの練習（ハンドリング等）を指導してください。目標:{st.session_state.db['profile']['goal']}"
+)
 
 # --- 5. サイドバー機能 (管理画面) ---
 with st.sidebar.expander("👤 プロフィール・LINE設定"):
-    h_v = st.number_input("身長 (cm)", value=float(st.session_state.db["profile"]["height"]))
-    w_v = st.number_input("体重 (kg)", value=float(st.session_state.db["profile"]["weight"]))
-    g_v = st.text_area("目標", value=st.session_state.db["profile"]["goal"])
+    p_d = st.session_state.db["profile"]
+    h_v = st.number_input("身長 (cm)", value=float(p_d["height"]))
+    w_v = st.number_input("体重 (kg)", value=float(p_d["weight"]))
+    g_v = st.text_area("目標", value=p_d["goal"])
     st.divider()
-    l_en = st.checkbox("LINE報告を有効にする", value=st.session_state.db["line"]["en"])
+    l_en = st.checkbox("LINE報告を有効化", value=st.session_state.db["line"]["en"])
     l_at = st.text_input("LINEトークン", value=st.session_state.db["line"]["token"], type="password")
     l_ui = st.text_input("宛先UID", value=st.session_state.db["line"]["uid"])
     
-    if st.button("全設定を保存"):
-        tasks_json = json.dumps(st.session_state.db["tasks"], ensure_ascii=False)
+    if st.button("設定を保存"):
+        t_json = json.dumps(st.session_state.db["tasks"], ensure_ascii=False)
         df_p = pd.DataFrame([{
             "user_id": login_id, "height": h_v, "weight": w_v, "goal": g_v,
             "line_token": l_at, "line_user_id": l_ui, "line_enabled": l_en,
-            "daily_message": st.session_state.db["daily_message"], "tasks_json": tasks_json
+            "daily_message": st.session_state.db["daily_message"], "tasks_json": t_json
         }])
         if save_to_gs("Profiles", df_p, key_cols=['user_id']):
-            st.success("スプレッドシートに保存完了！")
+            st.session_state.db["profile"] = {"height": h_v, "weight": w_v, "goal": g_v}
+            st.success("保存しました！")
 
 with st.sidebar.expander("📊 記録項目の追加・削除"):
-    new_m = st.text_input("新規項目")
-    if st.button("追加") and new_m:
-        st.session_state.db["metrics_defs"].append(new_m)
-        df_s = pd.DataFrame({"user_id": [login_id]*len(st.session_state.db["metrics_defs"]), "metric_defs": st.session_state.db["metrics_defs"]})
-        conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Settings", data=df_s)
-        st.rerun()
+    new_m = st.text_input("新規項目名（例：シュート成功数）")
+    if st.button("項目を追加") and new_m:
+        if new_m not in st.session_state.db["metrics_defs"]:
+            st.session_state.db["metrics_defs"].append(new_m)
+            df_s = pd.DataFrame({"user_id": [login_id]*len(st.session_state.db["metrics_defs"]), "metric_defs": st.session_state.db["metrics_defs"]})
+            conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Settings", data=df_s)
+            st.rerun()
+    
+    if st.session_state.db["metrics_defs"]:
+        st.divider()
+        del_m = st.selectbox("削除する項目", st.session_state.db["metrics_defs"])
+        if st.button("選択項目を削除"):
+            st.session_state.db["metrics_defs"].remove(del_m)
+            df_s = pd.DataFrame({"user_id": [login_id]*len(st.session_state.db["metrics_defs"]), "metric_defs": st.session_state.db["metrics_defs"]})
+            conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Settings", data=df_s)
+            st.rerun()
 
 st.sidebar.divider()
-uploaded_file = st.sidebar.file_uploader("写真分析", type=["jpg", "png", "jpeg"])
+uploaded_file = st.sidebar.file_uploader("写真分析（食事やフォーム）", type=["jpg", "png", "jpeg"])
 
 # --- 6. メイン画面 ---
-st.title(f"🔥 AI Trainer Pro: {login_id}")
+st.title(f"🏃‍♂️ AI Trainer Pro: {login_id}")
 tabs = st.tabs(["📅 カレンダー", "📋 今日のメニュー", "📈 グラフ", "🚀 ロードマップ", "💬 相談"])
 today = datetime.date.today()
 
-# --- Tab 1: カレンダー & 詳細ポップアップ機能 ---
+# --- Tab 1: カレンダー ---
 with tabs[0]:
-    st.header(f"🗓️ {today.strftime('%Y年 %m月')} の記録")
-    
-    # カレンダー描画
+    st.header(f"🗓️ {today.strftime('%Y年 %m月')}")
     cal = calendar.monthcalendar(today.year, today.month)
     cols_h = st.columns(7)
     for i, d in enumerate(["月", "火", "水", "木", "金", "土", "日"]): cols_h[i].write(f"**{d}**")
@@ -152,64 +166,77 @@ with tabs[0]:
                 cols[i].markdown(f'<div style="background:{color};color:white;padding:10px;text-align:center;border-radius:5px;min-height:50px;">{day}</div>', unsafe_allow_html=True)
 
     st.divider()
-    # 【目玉機能】日付を選択してその日の頑張りを表示
-    st.subheader("🔍 過去の頑張りを振り返る")
-    selected_date = st.date_input("日付を選択してください", value=today)
-    sel_date_str = str(selected_date)
-    
-    if sel_date_str in st.session_state.db["notes"]:
-        note_content = st.session_state.db["notes"][sel_date_str]
-        rate_content = st.session_state.db["history"].get(sel_date_str, 0)
+    selected_date = st.date_input("日付を選択して詳細を確認", value=today)
+    sel_str = str(selected_date)
+    if sel_str in st.session_state.db["notes"]:
         with st.chat_message("assistant"):
-            st.write(f"📅 **{sel_date_str} の記録**")
-            st.write(f"📈 達成率: **{int(float(rate_content)*100)}%**")
-            st.info(f"📝 **頑張りメモ:**\n{note_content}")
+            st.write(f"📝 **{sel_str} の頑張りメモ:**")
+            st.info(st.session_state.db["notes"][sel_str])
     else:
-        st.info("この日の記録はまだありません。")
+        st.info("この日のメモはありません。")
 
-# --- Tab 2: 今日のメニュー (保存 ＆ 状態維持) ---
+# --- Tab 2: 今日のメニュー (項目連動 ＆ 状態維持) ---
 with tabs[1]:
-    st.info(f"**【{selected_coach}より】** {st.session_state.db.get('daily_message', '生成してください')}")
-    if st.button("新しくメニューを生成"):
-        res = model.generate_content(f"目標に基づきタスク4つと励ましを [MESSAGE]...[/MESSAGE] で出力。")
+    st.info(f"**【{selected_coach}からの伝言】**\n{st.session_state.db.get('daily_message', '生成してください')}")
+    
+    if st.button("AIメニューを新しく生成"):
+        res = model.generate_content("バスケの室内練習タスクを4つと励ましを [MESSAGE]...[/MESSAGE] で出力。タスクは '-' で始めて。")
         full_text = res.text
         st.session_state.db["daily_message"] = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", full_text, re.DOTALL).group(1).strip()
         tasks_list = [l.strip("- *1234. ") for l in full_text.split("\n") if l.strip().startswith(("-", "*", "1.", "2."))]
         st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks_list if t][:4]
-        # 生成時にProfilesシートを更新（タスクを空にする）
         st.rerun()
 
-    st.subheader("✅ 今日のタスク")
-    for i, t in enumerate(st.session_state.db["tasks"]):
-        st.session_state.db["tasks"][i]["done"] = st.checkbox(t["task"], value=t["done"], key=f"tk_{i}_{t['task']}")
+    col_l, col_r = st.columns([2, 1])
     
-    done_n = sum(1 for t in st.session_state.db["tasks"] if t["done"])
-    rate = done_n / len(st.session_state.db["tasks"]) if st.session_state.db["tasks"] else 0
-    st.metric("現在の達成率", f"{int(rate*100)}%")
-    
-    free_report = st.text_area("今日頑張ったこと", placeholder="例：3ポイントシュートが5回連続で入った！")
+    with col_l:
+        st.subheader("✅ 本日のタスクリスト")
+        if not st.session_state.db["tasks"]:
+            st.warning("生成ボタンを押してください")
+        else:
+            for i, t in enumerate(st.session_state.db["tasks"]):
+                st.session_state.db["tasks"][i]["done"] = st.checkbox(t["task"], value=t["done"], key=f"tk_{i}_{t['task']}")
+            
+            done_n = sum(1 for t in st.session_state.db["tasks"] if t["done"])
+            rate = done_n / len(st.session_state.db["tasks"])
+            st.metric("現在の達成率", f"{int(rate*100)}%")
+            st.progress(rate)
+            
+            free_report = st.text_area("今日頑張ったこと", placeholder="例：ハンドリングが昨日よりスムーズにできた！")
 
-    if st.button("🚀 今日の成果を保存 & LINE報告"):
-        # プロフィールの更新（tasks_jsonの保存）
-        tasks_json = json.dumps(st.session_state.db["tasks"], ensure_ascii=False)
-        df_p = pd.DataFrame([{"user_id": login_id, "height": h_v, "weight": w_v, "goal": g_v, "line_token": l_at, "line_user_id": l_ui, "line_enabled": l_en, "daily_message": st.session_state.db["daily_message"], "tasks_json": tasks_json}])
+    with col_r:
+        st.subheader("📈 数値記録")
+        # サイドバーで追加した項目がここに自動で並ぶ
+        today_metrics = {}
+        for m in st.session_state.db["metrics_defs"]:
+            today_metrics[m] = st.number_input(f"{m}", value=0.0, key=f"met_{m}")
+
+    if st.button("🚀 成果を保存 ＆ LINE報告送信"):
+        # 状態保存
+        t_json = json.dumps(st.session_state.db["tasks"], ensure_ascii=False)
+        df_p = pd.DataFrame([{
+            "user_id": login_id, "height": h_v, "weight": w_v, "goal": g_v, "line_token": l_at, 
+            "line_user_id": l_ui, "line_enabled": l_en, "daily_message": st.session_state.db["daily_message"], "tasks_json": t_json
+        }])
         save_to_gs("Profiles", df_p, key_cols=['user_id'])
         
-        # 履歴の更新（noteも含めて保存）
+        # 履歴・数値保存
         save_to_gs("History", pd.DataFrame([{"user_id": login_id, "date": str(today), "rate": rate, "note": free_report}]))
+        m_rows = [{"user_id": login_id, "date": str(today), "metric_name": k, "value": v} for k, v in today_metrics.items()]
+        save_to_gs("Metrics", pd.DataFrame(m_rows), key_cols=['user_id', 'date', 'metric_name'])
         
         # LINE報告
         if l_en and l_at:
-            msg = f"【{login_id} 報告】\n達成率: {int(rate*100)}%\n頑張り: {free_report}"
+            msg = f"\n【{login_id} 本日の報告】\n達成率: {int(rate*100)}%\n頑張り: {free_report}\n数値: {today_metrics}"
             requests.post("https://api.line.me/v2/bot/message/push", headers={"Authorization": f"Bearer {l_at}", "Content-Type": "application/json"}, json={"to": l_ui, "messages": [{"type": "text", "text": msg}]})
         
-        st.success("全てのデータを保存しました！カレンダーで振り返ることができます。")
+        st.success("全てのデータを保存しました！")
         st.balloons()
         st.rerun()
 
 # --- Tab 3: グラフ ---
 with tabs[2]:
-    st.header("📈 成長の軌跡")
+    st.header("📈 成長の記録")
     m_data = st.session_state.db.get("metrics_data", pd.DataFrame())
     if not m_data.empty:
         sel_metric = st.selectbox("項目を選択", st.session_state.db["metrics_defs"])
@@ -217,11 +244,13 @@ with tabs[2]:
         if not plot_df.empty:
             plot_df['date'] = pd.to_datetime(plot_df['date'])
             st.line_chart(plot_df.sort_values('date').set_index('date')['value'])
+    else:
+        st.info("データがありません。保存ボタンで最初の記録をしてください。")
 
 # --- Tab 4: ロードマップ ---
 with tabs[3]:
     if st.button("ロードマップ生成"):
-        res = model.generate_content("目標へのステップをMermaid形式で。```mermaid...```で囲んで。")
+        res = model.generate_content("目標へのステップをMermaid形式のmindmapで。```mermaid...```で囲んで。")
         match = re.search(r"```mermaid\s*(.*?)\s*```", res.text, re.DOTALL)
         if match: st.session_state.db["roadmap"] = match.group(1)
     if st.session_state.db.get("roadmap"):
@@ -229,8 +258,8 @@ with tabs[3]:
 
 # --- Tab 5: 相談 ---
 with tabs[4]:
-    st.header("💬 AIコーチ相談")
-    chat_in = st.chat_input("何でも聞いてね")
+    st.header("💬 AIコーチ相談室")
+    chat_in = st.chat_input("相談内容を入力してください")
     if chat_in:
         inputs = [chat_in, Image.open(uploaded_file)] if uploaded_file else [chat_in]
         st.chat_message("assistant").write(model.generate_content(inputs).text)
