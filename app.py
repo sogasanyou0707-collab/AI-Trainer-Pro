@@ -85,17 +85,31 @@ selected_day_data = metrics_df[
     (metrics_df['date'] == st.session_state.selected_date)
 ]
 
+# --- 修正後の詳細表示エリア ---
+
 with st.container():
     st.write(f"### 📅 {st.session_state.selected_date} の詳細")
+    
     if not selected_day_data.empty:
         row = selected_day_data.iloc[0]
-        # Metricsシートに 'handling_speed' 列があることを想定
-        speed = row.get('handling_speed', '-')
-        st.metric("ハンドリングスピード", f"{speed} 秒")
+        
+        # 【修正ポイント】列名ではなく「左から4番目（D列）」を直接参照
+        # row.iloc[3] が D列のデータに相当します
+        try:
+            speed_value = row.iloc[3] 
+            # 数値が0や空文字でないかチェック
+            if pd.isna(speed_value) or speed_value == 0:
+                st.metric("ハンドリングスピード", "記録なし")
+            else:
+                st.metric("ハンドリングスピード", f"{speed_value} 秒")
+        except Exception:
+            st.error("D列（ハンドリングスピード）の読み取りに失敗しました。")
+            
     else:
         st.caption("この日の練習記録はありません。")
-
+        
 # --- 6. 今日の入力への導線 ---
 st.divider()
 if st.button("🚀 今日の練習を記録する", use_container_width=True, type="primary"):
     st.session_state.input_mode = True
+
