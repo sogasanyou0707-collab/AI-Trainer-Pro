@@ -3,49 +3,25 @@ import google.generativeai as genai
 import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 import re
+import streamlit as st
+import pandas as pd
 
+# (1) まず、スプレッドシートやCSVを読み込んで「df」に代入する
+# ※ここはご自身の読み込み処理（read_csvなど）に書き換えてください
+df = pd.read_csv("your_data.csv") 
+
+# (2) 「df」が作られた後で、中身を確認するコードを書く
+st.write("データの行数:", len(df))
+st.write("認識されている列名:", df.columns.tolist())
+
+# (3) その後、特定の列（身長など）を表示する
+if '身長' in df.columns:
+    st.write(df['身長'])
+else:
+    st.error("列名 '身長' が見つかりません。")
 # 読み込んだデータが空かどうか、列名が何かを表示する
 print("データの行数:", len(df))
 print("認識されている列名:", df.columns.tolist())
-
-# 1. ページ設定
-st.set_page_config(page_title="AI Trainer Pro", layout="wide")
-st.title("🏃‍♂️ AI Trainer Pro")
-
-# 2. 初期設定（Secretsから読み込み）
-try:
-    if "GEMINI_API_KEY" in st.secrets:
-        API_KEY = st.secrets["GEMINI_API_KEY"]
-    else:
-        st.error("Secretsに 'GEMINI_API_KEY' が設定されていません。")
-        st.stop()
-
-    genai.configure(api_key=API_KEY)
-    
-    # Gemini 3 モデルの設定
-    try:
-        model = genai.GenerativeModel("gemini-3-flash-preview")
-    except:
-        model = None
-
-    if "connections" in st.secrets and "gsheets" in st.secrets.connections:
-        SPREADSHEET_URL = st.secrets.connections.gsheets.spreadsheet
-    else:
-        st.error("SecretsにスプレッドシートのURLが見つかりません。")
-        st.stop()
-
-    conn = st.connection("gsheets", type=GSheetsConnection)
-
-except Exception as e:
-    st.error(f"初期設定エラー: {e}")
-    st.stop()
-
-# 3. データ読み込み関数
-def load_data(sheet_name):
-    try:
-        return conn.read(spreadsheet=SPREADSHEET_URL, worksheet=sheet_name, ttl=0)
-    except Exception as e:
-        return pd.DataFrame()
 
 # 4. タブ作成
 tab1, tab2, tab3 = st.tabs(["プロフィール", "カレンダー", "項目管理"])
@@ -111,4 +87,5 @@ with tab3:
     st.subheader("マスタデータ")
     settings_df = load_data("Settings")
     st.dataframe(settings_df)
+
 
