@@ -1,75 +1,42 @@
 import streamlit as st
-import datetime
 import pandas as pd
+import datetime
 
-# --- 1. データ取得ロジック (Google Sheets連携の核) ---
-def get_weekly_data(user_id):
-    # 本来はここで st.connection("gsheets") 等を使用して Metrics シートを読み込む
-    # 今回は表示ロジックを優先するため、ダミーデータを作成します
-    today = datetime.date.today()
-    dates = [(today - datetime.timedelta(days=i)) for i in range(6, -1, -1)]
-    
-    # 実際はシートから df = conn.read(...) してフィルタリング
-    data = {
-        "date": dates,
-        "is_done": [True, False, True, True, False, True, True],
-        "speed": [19.5, 0, 19.2, 18.8, 0, 18.5, 18.2], # ハンドリングスピード
-        "comment": ["絶好調！", "", "リズムが良い", "スピードアップ！", "", "最高記録！", "完璧！"]
-    }
-    return pd.DataFrame(data)
+# --- 1. スプレッドシート接続設定 ---
+# 接続情報を取得（st.connection経由、または既存の認証情報を利用）
+conn = st.connection("gsheets", type="gsheets")
 
-# --- 2. 状態管理 (どの日付が選択されているか) ---
-if "selected_date_idx" not in st.session_state:
-    st.session_state.selected_date_idx = 6 # デフォルトは「今日」
+def load_app_data():
+    # 各シートを読み込み
+    profiles_df = conn.read(worksheet="Profiles")
+    metrics_df = conn.read(worksheet="Metrics")
+    # 日付列を日付型に変換しておく
+    metrics_df['date'] = pd.to_datetime(metrics_df['date']).dt.date
+    return profiles_df, metrics_df
 
-# --- 3. UI実装 ---
-st.title("🏀 Team Effort Coach")
+# --- 2. データの取得と整形 ---
+profiles_df, metrics_df = load_app_data()
 
-# A. ユーザー・コーチ情報 (固定表示)
-with st.container():
-    col1, col2 = st.columns(2)
-    col1.metric("Player", "息子さん")
-    col2.metric("Coach", "安西コーチ")
-    st.info(f"🎯 **目標:** ハンドリング18秒切り！")
+# 選択されたユーザー（selected_user）の情報を抽出
+# ※selected_user は画面上のセレクトボックスから取得
+user_info = profiles_df[profiles_df['name'] == selected_user].iloc[0]
 
-# B. 横スクロールカレンダー (データ連動)
-df_weekly = get_weekly_data("user_001")
+# 直近1週間のデータをMetricsから抽出
+today = datetime.date.today()
+start_date = today - datetime.timedelta(days=6)
+weekly_metrics = metrics_df[
+    (metrics_df['name'] == selected_user) & 
+    (metrics_df['date'] >= start_date)
+].sort_values('date')
 
-# CSSで横スクロールを強制
-st.markdown("""
-    <style>
-    .scroll-wrapper { display: flex; overflow-x: auto; gap: 10px; padding: 10px 0; }
-    .day-btn { 
-        min-width: 60px; height: 80px; border-radius: 15px; 
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
-        border: 2px solid #ddd; background: white; cursor: pointer;
-    }
-    .selected { border-color: #ff4b4b; background-color: #fff0f0; }
-    </style>
-""", unsafe_allow_html=True)
+# --- 3. UIへの反映（前回のスクロールUIに流し込む） ---
 
-# Streamlitのボタンで選択を切り替える(モバイルで押しやすくするため)
-cols = st.columns(7)
-for i, row in df_weekly.iterrows():
-    label = f"{row['date'].strftime('%a')}\n{'🏀' if row['is_done'] else '⚪'}\n{row['date'].day}"
-    if cols[i].button(label, key=f"btn_{i}"):
-        st.session_state.selected_date_idx = i
+# A. プロフィール・目標の表示
+col1, col2 = st.columns(2)
+with col1:
+    st.metric("Coach", user_info['coach_name']) # シートから読み込み
+with col2:
+    st.info(f"🎯 **目標:** {user_info['current_goal']}") # シートから読み込み
 
-# C. 選択された日の詳細表示 (カード形式)
-selected_row = df_weekly.iloc[st.session_state.selected_date_idx]
-
-st.markdown("---")
-with st.container():
-    st.subheader(f"📅 {selected_row['date'].strftime('%m/%d')} の記録")
-    
-    if selected_row['is_done']:
-        c1, c2 = st.columns(2)
-        c1.markdown(f"**ハンドリング:**\n## {selected_row['speed']} 秒")
-        c2.markdown(f"**コーチの評価:**\n> {selected_row['comment']}")
-    else:
-        st.warning("この日の練習記録はありません。")
-
-# D. アクションボタン (一番押しやすい場所に配置)
-st.markdown("---")
-if st.button("🚀 今日の練習を記録する", use_container_width=True, type="primary"):
-    st.session_state.show_input_form = True # 入力フォームへ誘導
+# B. 横スクロールカレンダーの動的生成
+# weekly_metricsにデータがあれば🏀、なければ⚪を表示するループ処理
