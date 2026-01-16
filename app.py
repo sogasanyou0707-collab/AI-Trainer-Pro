@@ -3,113 +3,95 @@ import pandas as pd
 import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# --- 1. 接続設定 ---
+# --- 1. 接続とデータ読み込み ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
-    # 各シートを最新状態で読み込み
     profiles = conn.read(worksheet="Profiles", ttl=0)
     metrics = conn.read(worksheet="Metrics", ttl=0)
     
-    # 列名の空白削除と小文字化（マッチングを確実にするため）
+    # 列名のクレンジング（空白除去・小文字化）
+    # A=user_id, B=date, C=metric_name, D=value と想定
     profiles.columns = [c.strip().lower() for c in profiles.columns]
     metrics.columns = [c.strip().lower() for c in metrics.columns]
     
-    # 日付型の変換
     if 'date' in metrics.columns:
         metrics['date'] = pd.to_datetime(metrics['date']).dt.date
     return profiles, metrics
 
-# データロード実行
-try:
-    profiles_df, metrics_df = load_data()
-except Exception as e:
-    st.error("データの読み取りに失敗しました。シート名や列構成を確認してください。")
-    st.stop()
+profiles_df, metrics_df = load_data()
 
-# --- 2. ユーザー選択（'user_id' 列を使用） ---
-st.title("🏀 AI Basketball Coach")
+# --- 2. ユーザー選択 ---
+user_list = profiles_df['user_id'].unique().tolist()
+selected_user = st.selectbox("👤 ユーザーを選択", user_list)
+user_info = profiles_df[profiles_df['user_id'] == selected_user].iloc[0]
 
-if 'user_id' in profiles_df.columns:
-    user_list = profiles_df['user_id'].unique().tolist()
-    selected_user = st.selectbox("👤 ユーザーを選択", user_list)
-    user_info = profiles_df[profiles_df['user_id'] == selected_user].iloc[0]
-else:
-    st.error("Profilesシートに 'user_id' 列が見つかりません。")
-    st.stop()
-
-# --- 3. ステータス表示（サイドバーからトップ画へ移動） ---
+# --- 3. ステータス表示 ---
 col1, col2 = st.columns(2)
 with col1:
-    # コーチ名がシートにない場合はデフォルトを表示
-    coach = user_info.get('coach_name', '安西コーチ') 
-    st.markdown(f"""
-        <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #ff4b4b;">
-            <small>現在のコーチ</small><br><strong>🔥 {coach}</strong>
-        </div>
-    """, unsafe_allow_html=True)
+    st.info(f"🔥 コーチ: {user_info.get('coach_name', '安西コーチ')}")
 with col2:
-    # Profilesシートの 'goal' 列から取得
-    goal = user_info.get('goal', '目標未設定')
-    st.markdown(f"""
-        <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #ff4b4b;">
-            <small>現在の目標</small><br><strong>🎯 {goal}</strong>
-        </div>
-    """, unsafe_allow_html=True)
+    st.info(f"🎯 目標: {user_info.get('goal', '目標未設定')}")
 
 st.divider()
 
-# --- 4. 横スクロール・今週の進捗（Metricsシート連動） ---
+# --- 4. 横スクロール・進捗（「ハンドリング」の練習があるかチェック） ---
 st.subheader("🗓️ 今週の進捗")
-
 today = datetime.date.today()
 date_range = [(today - datetime.timedelta(days=i)) for i in range(6, -1, -1)]
 
-# モバイル視認性を重視した7カラムのボタン配置
 cols = st.columns(7)
 for i, d in enumerate(date_range):
-    # Metricsから該当ユーザー・該当日のデータを抽出
-    day_data = metrics_df[(metrics_df['user_id'] == selected_user) & (metrics_df['date'] == d)]
-    is_done = not day_data.empty
+    # 【検索条件】ユーザーID ＋ 日付 ＋ 項目名が「ハンドリング」
+    # metric_name 列(C列)から「ハンドリング」を検索
+    has_practice = not metrics_df[
+        (metrics_df['user_id'] == selected_user) & 
+        (metrics_df['date'] == d) & 
+        (metrics_df['metric_name'].astype(str).str.contains('ハンドリング'))
+    ].empty
     
-    label = f"{d.strftime('%a')}\n{'🏀' if is_done else '⚪'}\n{d.day}"
+    label = f"{d.strftime('%a')}\n{'🏀' if has_practice else '⚪'}\n{d.day}"
     if cols[i].button(label, key=f"day_{i}"):
         st.session_state.selected_date = d
 
-# --- 5. 選択した日の詳細表示 ---
+# --- 5. 選択した日の詳細（D列のvalueを取得） ---
 if "selected_date" not in st.session_state:
     st.session_state.selected_date = today
 
-selected_day_data = metrics_df[
+# 該当日・該当ユーザーの「ハンドリング」行を抽出
+handling_data = metrics_df[
     (metrics_df['user_id'] == selected_user) & 
-    (metrics_df['date'] == st.session_state.selected_date)
+    (metrics_df['date'] == st.session_state.selected_date) & 
+    (metrics_df['metric_name'].astype(str).str.contains('ハンドリング'))
 ]
 
-# --- 修正後の詳細表示エリア ---
-
 with st.container():
-    st.write(f"### 📅 {st.session_state.selected_date} の詳細")
-    
-    if not selected_day_data.empty:
-        row = selected_day_data.iloc[0]
-        
-        # 【修正ポイント】列名ではなく「左から4番目（D列）」を直接参照
-        # row.iloc[3] が D列のデータに相当します
-        try:
-            speed_value = row.iloc[3] 
-            # 数値が0や空文字でないかチェック
-            if pd.isna(speed_value) or speed_value == 0:
-                st.metric("ハンドリングスピード", "記録なし")
-            else:
-                st.metric("ハンドリングスピード", f"{speed_value} 秒")
-        except Exception:
-            st.error("D列（ハンドリングスピード）の読み取りに失敗しました。")
-            
+    st.write(f"### 📅 {st.session_state.selected_date} の記録")
+    if not handling_data.empty:
+        # D列（value）の値を取得して表示
+        val = handling_data.iloc[0]['value']
+        st.metric("ハンドリングスピード", f"{val} 秒")
     else:
-        st.caption("この日の練習記録はありません。")
-        
-# --- 6. 今日の入力への導線 ---
+        st.write("この日の「ハンドリング」記録はありません。")
+
+# --- 6. 今日の入力フォーム（書き込み仕様） ---
 st.divider()
 if st.button("🚀 今日の練習を記録する", use_container_width=True, type="primary"):
-    st.session_state.input_mode = True
+    st.session_state.show_form = True
 
+if st.session_state.get("show_form"):
+    with st.form("input_form"):
+        st.write("### 今日の記録を入力")
+        # モバイルで入力しやすいスライダー
+        new_speed = st.slider("ハンドリングスピード (秒)", 10.0, 60.0, 20.0, 0.1)
+        
+        if st.form_submit_button("保存する"):
+            # ここでスプレッドシートに「記載」するロジック
+            # A=user_id, B=今日, C="ハンドリング", D=new_speed を書き込む
+            new_row = [selected_user, today.strftime('%Y-%m-%d'), "ハンドリング", new_speed]
+            
+            # 書き込み処理 (st-gsheets-connection を使用する場合)
+            # conn.create(worksheet="Metrics", data=[new_row]) 
+            
+            st.success(f"{today} の記録として {new_speed}秒 を保存しました！")
+            st.session_state.show_form = False
