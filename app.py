@@ -263,4 +263,3 @@ with tabs[4]:
     if chat_in:
         inputs = [chat_in, Image.open(uploaded_file)] if uploaded_file else [chat_in]
         st.chat_message("assistant").write(model.generate_content(inputs).text)
-ここから再スタートしたいです
