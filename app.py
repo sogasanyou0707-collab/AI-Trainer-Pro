@@ -23,7 +23,6 @@ except Exception as e:
 # --- 2. モデル診断機能 (404エラー対策) ---
 @st.cache_resource
 def get_available_models():
-    """現在使用可能なモデル名の一覧を取得"""
     try:
         models = [m.name.replace("models/", "") for m in genai.list_models() 
                   if "generateContent" in m.supported_generation_methods]
@@ -48,6 +47,7 @@ def load_full_data_gs(user_id):
         s_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Settings", ttl=0)
 
         u_id = str(user_id)
+        # プロフィール
         prof = p_df[p_df['user_id'].astype(str) == u_id].to_dict('records')
         if prof:
             p = prof[0]
@@ -55,9 +55,11 @@ def load_full_data_gs(user_id):
             default_data["line"] = {"token": p.get('line_token', ""), "uid": p.get('line_user_id', ""), "en": p.get('line_enabled', False)}
             default_data["daily_message"] = p.get('daily_message', "準備はいいか！")
 
+        # 履歴・グラフデータ
         if not h_df.empty:
             default_data["history"] = h_df[h_df['user_id'].astype(str) == u_id].set_index('date')['rate'].to_dict()
         if not m_df.empty:
+            # グラフ用にuser_idでフィルタリング
             default_data["metrics_data"] = m_df[m_df['user_id'].astype(str) == u_id]
         if not s_df.empty:
             raw_defs = s_df[s_df['user_id'].astype(str) == u_id]['metric_defs'].dropna().tolist()
@@ -77,17 +79,24 @@ def save_to_gs(worksheet_name, new_df, key_cols=['user_id', 'date']):
     except:
         return False
 
-# --- 4. ログイン & セッション管理 ---
-st.sidebar.title("🔑 ログイン")
+# --- 4. ログイン & コーチ選択 ---
+st.sidebar.title("🔑 ログイン設定")
 login_id = st.sidebar.text_input("ユーザーIDを入力", value="User1").strip()
 
 if "current_user" not in st.session_state or st.session_state.current_user != login_id:
     st.session_state.db = load_full_data_gs(login_id)
     st.session_state.current_user = login_id
 
-# 診断用モデル選択
-selected_model_name = st.sidebar.selectbox("🤖 使用AIモデル", available_models, index=0)
-model = genai.GenerativeModel(selected_model_name)
+# 【復活】コーチ選択
+st.sidebar.divider()
+selected_coach = st.sidebar.selectbox("🤖 コーチを選択", ["熱血コーチ", "論理派トレーナー", "バスケットボール専門コーチ"])
+selected_model_name = st.sidebar.selectbox("使用AIモデル(診断用)", available_models, index=0)
+
+# モデルの初期化 (コーチの設定を注入)
+model = genai.GenerativeModel(
+    selected_model_name,
+    system_instruction=f"あなたは{selected_coach}です。ユーザーID:{login_id}、目標:{st.session_state.db['profile']['goal']}に合わせて指導してください。"
+)
 
 # --- 5. サイドバー機能 (プロフィール・項目・LINE・画像) ---
 with st.sidebar.expander("👤 プロフィール設定"):
@@ -123,16 +132,15 @@ with st.sidebar.expander("📊 項目追加・削除"):
             st.rerun()
 
 with st.sidebar.expander("💬 LINE報告設定"):
-    l_en = st.checkbox("有効", value=st.session_state.db["line"]["en"])
+    l_en = st.checkbox("有効化", value=st.session_state.db["line"]["en"])
     l_at = st.text_input("トークン", value=st.session_state.db["line"]["token"], type="password")
     l_ui = st.text_input("ユーザーID", value=st.session_state.db["line"]["uid"])
     if st.button("LINE保存"):
         st.session_state.db["line"] = {"token": l_at, "uid": l_ui, "en": l_en}
-        st.info("プロフ保存で確定")
+        st.info("プロフィール保存で確定")
 
 st.sidebar.divider()
-st.sidebar.subheader("📸 写真分析")
-uploaded_file = st.sidebar.file_uploader("写真をアップ", type=["jpg", "png", "jpeg"])
+uploaded_file = st.sidebar.file_uploader("写真分析 (食事・フォーム)", type=["jpg", "png", "jpeg"])
 
 # --- 6. メイン画面 (タブ構成) ---
 st.title(f"🏃‍♂️ AI Trainer Pro: {login_id}")
@@ -154,15 +162,17 @@ with tabs[0]:
                 color = "#FF4B4B" if float(rate) >= 0.8 else "gray" if rate == -1 else "#007BFF"
                 cols[i].markdown(f'<div style="background:{color};color:white;padding:10px;text-align:center;border-radius:5px;">{day}</div>', unsafe_allow_html=True)
 
-# --- Tab 2: 今日のメニュー (チェック・達成率・LINE) ---
+# --- Tab 2: 今日のメニュー ---
 with tabs[1]:
-    st.info(f"**コーチ:** {st.session_state.db.get('daily_message', '生成してください')}")
+    st.info(f"**【{selected_coach}より】** {st.session_state.db.get('daily_message', '生成してください')}")
     if st.button("メニュー生成"):
         try:
-            res = model.generate_content(f"目標:{st.session_state.db['profile']['goal']} に基づくタスク4つと励ましを [MESSAGE]...[/MESSAGE] で出力。")
-            st.session_state.db["daily_message"] = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", res.text, re.DOTALL).group(1).strip()
-            tasks = [l.strip("- *1234. ") for l in res.text.split("\n") if l.strip().startswith(("-", "*", "1.", "2."))]
-            st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks[:4]]
+            res = model.generate_content(f"目標に基づき、タスク4つと励ましを [MESSAGE]...[/MESSAGE] で出力。タスクは必ず '-' で始めてください。")
+            full_text = res.text
+            st.session_state.db["daily_message"] = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", full_text, re.DOTALL).group(1).strip()
+            # タスク抽出の強化
+            tasks = [l.strip("- *1234. ") for l in full_text.split("\n") if l.strip().startswith(("-", "*", "1.", "2."))]
+            st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks if t][:4]
             st.rerun()
         except Exception as e: st.error(f"生成エラー: {e}")
 
@@ -171,7 +181,8 @@ with tabs[1]:
         st.subheader("✅ 本日のタスク")
         if not st.session_state.db["tasks"]: st.warning("メニューを生成してください")
         for i, t in enumerate(st.session_state.db["tasks"]):
-            st.session_state.db["tasks"][i]["done"] = st.checkbox(t["task"], value=t["done"], key=f"tk_{i}_{login_id}")
+            # keyにタスク名も含めることで表示崩れを防止
+            st.session_state.db["tasks"][i]["done"] = st.checkbox(t["task"], value=t["done"], key=f"tk_{i}_{login_id}_{t['task']}")
         
         done_n = sum(1 for t in st.session_state.db["tasks"] if t["done"])
         total_n = len(st.session_state.db["tasks"])
@@ -191,32 +202,43 @@ with tabs[1]:
         config = st.session_state.db["line"]
         if config["en"] and config["token"]:
             feedback = model.generate_content(f"達成率{int(rate*100)}%、感想：『{free_note}』へのフィードバックを。").text
-            msg = f"\n【{login_id} 報告】\n達成率: {int(rate*100)}%\n頑張り: {free_note}\n\nコーチより:\n{feedback}"
+            msg = f"\n【{login_id} 報告】\n達成率: {int(rate*100)}%\n頑張り: {free_report}\n\nコーチより:\n{feedback}"
             requests.post("https://api.line.me/v2/bot/message/push", headers={"Authorization": f"Bearer {config['token']}", "Content-Type": "application/json"}, json={"to": config["uid"], "messages": [{"type": "text", "text": msg}]})
             st.toast("LINE送信完了")
         st.balloons()
         st.rerun()
 
-# --- Tab 3: グラフ ---
+# --- Tab 3: グラフ (表示ロジック強化) ---
 with tabs[2]:
-    m_df = st.session_state.db["metrics_data"]
+    st.header("📈 成長グラフ")
+    m_df = st.session_state.db.get("metrics_data", pd.DataFrame())
     if not m_df.empty:
-        sel = st.selectbox("表示項目", st.session_state.db["metrics_defs"])
-        st.line_chart(m_df[m_df['metric_name'] == sel].sort_values('date').set_index('date')['value'])
+        sel_metric = st.selectbox("表示項目を選択", st.session_state.db["metrics_defs"])
+        # データの抽出と型変換
+        plot_df = m_df[m_df['metric_name'] == sel_metric].copy()
+        if not plot_df.empty:
+            plot_df['date'] = pd.to_datetime(plot_df['date'])
+            plot_df = plot_df.sort_values('date')
+            st.line_chart(plot_df.set_index('date')['value'])
+        else:
+            st.info(f"'{sel_metric}' のデータがまだありません。")
+    else:
+        st.info("データがありません。保存ボタンで最初の記録をしてください。")
 
-# --- Tab 4: ロードマップ ---
+# --- Tab 4: ロードマップ (Mermaid) ---
 with tabs[3]:
-    if st.button("ロードマップ生成"):
-        res = model.generate_content("目標達成までのmindmapをMermaid形式で。```mermaid...```で囲んで。")
+    if st.button("最新ロードマップ生成"):
+        res = model.generate_content("目標達成までの戦略をMermaidのmindmap形式で。```mermaid...```で囲んで。")
         match = re.search(r"```mermaid\s*(.*?)\s*```", res.text, re.DOTALL)
         if match: st.session_state.db["roadmap"] = match.group(1)
     if st.session_state.db.get("roadmap"):
-        st.components.v1.html(f'<div class="mermaid">{st.session_state.db["roadmap"]}</div><script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";mermaid.initialize({{startOnLoad:true}});</script>', height=500)
+        st.components.v1.html(f'<div class="mermaid" style="display:flex;justify-content:center;">{st.session_state.db["roadmap"]}</div><script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";mermaid.initialize({{startOnLoad:true}});</script>', height=500)
 
-# --- Tab 5: 相談 (画像分析) ---
+# --- Tab 5: 相談 ---
 with tabs[4]:
-    st.header("💬 AI相談")
-    chat_in = st.chat_input("相談や写真分析の依頼を入力")
+    st.header("💬 AI相談 & 画像分析")
+    chat_in = st.chat_input("相談内容を入力してください")
     if chat_in:
         ins = [chat_in, Image.open(uploaded_file)] if uploaded_file else [chat_in]
-        st.write(f"**AI:** {model.generate_content(ins).text}")
+        with st.chat_message("assistant"):
+            st.write(model.generate_content(ins).text)
