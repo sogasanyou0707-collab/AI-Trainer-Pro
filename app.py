@@ -21,7 +21,7 @@ genai.configure(api_key=API_KEY)
 
 # ② モデルの定義（ご指定の Gemini 3 を使用）
 # ※PermissionDeniedが出る場合は、AI Studio側でこのモデルの利用権限を確認してください
-model = genai.GenerativeModel("gemini-3-flash")
+model = genai.GenerativeModel("gemini-3-flash-preview")
 
 # ③ スプレッドシートURLの取得
 if "connections" in st.secrets and "gsheets" in st.secrets.connections:
@@ -113,3 +113,4 @@ with tab3:
             st.success("Settingsシートを更新しました")
         except Exception as e:
             st.error(f"更新エラー: {e}")
+
