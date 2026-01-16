@@ -9,12 +9,9 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def load_data():
     profiles = conn.read(worksheet="Profiles", ttl=0)
     metrics = conn.read(worksheet="Metrics", ttl=0)
-    
-    # 列名のクレンジング（空白除去・小文字化）
-    # A=user_id, B=date, C=metric_name, D=value と想定
+    # クレンジング
     profiles.columns = [c.strip().lower() for c in profiles.columns]
     metrics.columns = [c.strip().lower() for c in metrics.columns]
-    
     if 'date' in metrics.columns:
         metrics['date'] = pd.to_datetime(metrics['date']).dt.date
     return profiles, metrics
@@ -24,74 +21,67 @@ profiles_df, metrics_df = load_data()
 # --- 2. ユーザー選択 ---
 user_list = profiles_df['user_id'].unique().tolist()
 selected_user = st.selectbox("👤 ユーザーを選択", user_list)
-user_info = profiles_df[profiles_df['user_id'] == selected_user].iloc[0]
+# 選択中のユーザー行を取得
+user_idx = profiles_df[profiles_df['user_id'] == selected_user].index[0]
+user_info = profiles_df.loc[user_idx]
 
-# --- 3. ステータス表示 ---
+# --- 3. コーチ選択 ＆ 目標設定 (Profilesシート更新) ---
+with st.expander("⚙️ コーチ・目標の設定を変更する"):
+    with st.form("settings_form"):
+        # コーチ選択
+        current_coach = user_info.get('coach_name', '安西コーチ')
+        new_coach = st.selectbox("コーチを選択", ["安西コーチ", "熱血コーチ", "冷静コーチ"], index=0)
+        
+        # 目標設定
+        current_goal = user_info.get('goal', '')
+        new_goal = st.text_input("今の目標を入力", value=current_goal)
+        
+        if st.form_submit_button("設定を保存"):
+            # Profilesの該当行を更新
+            profiles_df.at[user_idx, 'coach_name'] = new_coach
+            profiles_df.at[user_idx, 'goal'] = new_goal
+            # スプレッドシートへ上書き保存
+            conn.update(worksheet="Profiles", data=profiles_df)
+            st.success("設定を更新しました！")
+            st.rerun()
+
+# --- 4. 現在のステータス表示 (トップ画) ---
 col1, col2 = st.columns(2)
 with col1:
-    st.info(f"🔥 コーチ: {user_info.get('coach_name', '安西コーチ')}")
+    st.markdown(f"""<div style="background-color:#f0f2f6;padding:10px;border-radius:10px;border-left:5px solid #ff4b4b;">
+    <small>コーチ</small><br><strong>{user_info.get('coach_name', '未設定')}</strong></div>""", unsafe_allow_html=True)
 with col2:
-    st.info(f"🎯 目標: {user_info.get('goal', '目標未設定')}")
+    st.markdown(f"""<div style="background-color:#f0f2f6;padding:10px;border-radius:10px;border-left:5px solid #ff4b4b;">
+    <small>目標</small><br><strong>{user_info.get('goal', '未設定')}</strong></div>""", unsafe_allow_html=True)
 
 st.divider()
 
-# --- 4. 横スクロール・進捗（「ハンドリング」の練習があるかチェック） ---
-st.subheader("🗓️ 今週の進捗")
-today = datetime.date.today()
-date_range = [(today - datetime.timedelta(days=i)) for i in range(6, -1, -1)]
+# --- 5. 今日のデータ入力 (Metricsシート記載) ---
+st.subheader("🚀 今日の練習を記録")
 
-cols = st.columns(7)
-for i, d in enumerate(date_range):
-    # 【検索条件】ユーザーID ＋ 日付 ＋ 項目名が「ハンドリング」
-    # metric_name 列(C列)から「ハンドリング」を検索
-    has_practice = not metrics_df[
-        (metrics_df['user_id'] == selected_user) & 
-        (metrics_df['date'] == d) & 
-        (metrics_df['metric_name'].astype(str).str.contains('ハンドリング'))
-    ].empty
-    
-    label = f"{d.strftime('%a')}\n{'🏀' if has_practice else '⚪'}\n{d.day}"
-    if cols[i].button(label, key=f"day_{i}"):
-        st.session_state.selected_date = d
-
-# --- 5. 選択した日の詳細（D列のvalueを取得） ---
-if "selected_date" not in st.session_state:
-    st.session_state.selected_date = today
-
-# 該当日・該当ユーザーの「ハンドリング」行を抽出
-handling_data = metrics_df[
-    (metrics_df['user_id'] == selected_user) & 
-    (metrics_df['date'] == st.session_state.selected_date) & 
-    (metrics_df['metric_name'].astype(str).str.contains('ハンドリング'))
-]
-
+# 入力項目（今回はハンドリングスピード）
 with st.container():
-    st.write(f"### 📅 {st.session_state.selected_date} の記録")
-    if not handling_data.empty:
-        # D列（value）の値を取得して表示
-        val = handling_data.iloc[0]['value']
-        st.metric("ハンドリングスピード", f"{val} 秒")
-    else:
-        st.write("この日の「ハンドリング」記録はありません。")
-
-# --- 6. 今日の入力フォーム（書き込み仕様） ---
-st.divider()
-if st.button("🚀 今日の練習を記録する", use_container_width=True, type="primary"):
-    st.session_state.show_form = True
-
-if st.session_state.get("show_form"):
-    with st.form("input_form"):
-        st.write("### 今日の記録を入力")
-        # モバイルで入力しやすいスライダー
-        new_speed = st.slider("ハンドリングスピード (秒)", 10.0, 60.0, 20.0, 0.1)
+    # キーボードを使わず親指で調整できるスライダー
+    input_speed = st.slider("ハンドリングスピード (秒)", 10.0, 40.0, 20.0, 0.1)
+    
+    if st.button("この内容で保存する", use_container_width=True, type="primary"):
+        # Metricsシート用の新しい行を作成
+        # A:user_id, B:date, C:metric_name, D:value
+        today_str = datetime.date.today()
+        new_entry = pd.DataFrame([{
+            "user_id": selected_user,
+            "date": today_str,
+            "metric_name": "ハンドリング",
+            "value": input_speed
+        }])
         
-        if st.form_submit_button("保存する"):
-            # ここでスプレッドシートに「記載」するロジック
-            # A=user_id, B=今日, C="ハンドリング", D=new_speed を書き込む
-            new_row = [selected_user, today.strftime('%Y-%m-%d'), "ハンドリング", new_speed]
-            
-            # 書き込み処理 (st-gsheets-connection を使用する場合)
-            # conn.create(worksheet="Metrics", data=[new_row]) 
-            
-            st.success(f"{today} の記録として {new_speed}秒 を保存しました！")
-            st.session_state.show_form = False
+        # 既存のデータに結合して上書き、または追加（ライブラリの仕様に合わせる）
+        updated_metrics = pd.concat([metrics_df, new_entry], ignore_index=True)
+        conn.update(worksheet="Metrics", data=updated_metrics)
+        
+        st.balloons()
+        st.success(f"{today_str} の記録を保存しました！")
+        st.rerun()
+
+# --- 6. カレンダー表示 (前回の横スクロールをここに配置) ---
+# ... (以前作成したスクロールカレンダーのコード) ...
