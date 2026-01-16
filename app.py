@@ -4,6 +4,10 @@ import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 import re
 
+# 読み込んだデータが空かどうか、列名が何かを表示する
+print("データの行数:", len(df))
+print("認識されている列名:", df.columns.tolist())
+
 # 1. ページ設定
 st.set_page_config(page_title="AI Trainer Pro", layout="wide")
 st.title("🏃‍♂️ AI Trainer Pro")
@@ -107,3 +111,4 @@ with tab3:
     st.subheader("マスタデータ")
     settings_df = load_data("Settings")
     st.dataframe(settings_df)
+
