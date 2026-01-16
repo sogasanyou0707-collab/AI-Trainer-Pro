@@ -12,8 +12,7 @@ from streamlit_gsheets import GSheetsConnection
 # --- 1. ページ基本設定 ---
 st.set_page_config(page_title="AI Trainer Pro: Ultimate", layout="wide")
 
-try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
+try: API_KEY = st.secrets["GEMINI_API_KEY"]
     SPREADSHEET_URL = st.secrets.connections.gsheets.spreadsheet
     genai.configure(api_key=API_KEY)
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -263,3 +262,4 @@ with tabs[4]:
     if chat_in:
         inputs = [chat_in, Image.open(uploaded_file)] if uploaded_file else [chat_in]
         st.chat_message("assistant").write(model.generate_content(inputs).text)
+
