@@ -1,4 +1,4 @@
- import streamlit as st
+import streamlit as st
 import google.generativeai as genai
 import re
 import json
@@ -189,3 +189,4 @@ with tabs[1]: # メニュー
             requests.post("https://api.line.me/v2/bot/message/push", headers={"Authorization": f"Bearer {l_at}", "Content-Type": "application/json"}, json={"to": l_ui, "messages": [{"type": "text", "text": f"達成率{int(rate*100)}%\nメモ:{free_note}"}]})
         st.success("保存完了！")
         st.balloons()
+
