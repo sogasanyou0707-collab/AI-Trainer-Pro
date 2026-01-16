@@ -1,61 +1,75 @@
 import streamlit as st
 import datetime
+import pandas as pd
 
-# --- CSS: スマホでも縦に並ばせないための設定 ---
+# --- 1. データ取得ロジック (Google Sheets連携の核) ---
+def get_weekly_data(user_id):
+    # 本来はここで st.connection("gsheets") 等を使用して Metrics シートを読み込む
+    # 今回は表示ロジックを優先するため、ダミーデータを作成します
+    today = datetime.date.today()
+    dates = [(today - datetime.timedelta(days=i)) for i in range(6, -1, -1)]
+    
+    # 実際はシートから df = conn.read(...) してフィルタリング
+    data = {
+        "date": dates,
+        "is_done": [True, False, True, True, False, True, True],
+        "speed": [19.5, 0, 19.2, 18.8, 0, 18.5, 18.2], # ハンドリングスピード
+        "comment": ["絶好調！", "", "リズムが良い", "スピードアップ！", "", "最高記録！", "完璧！"]
+    }
+    return pd.DataFrame(data)
+
+# --- 2. 状態管理 (どの日付が選択されているか) ---
+if "selected_date_idx" not in st.session_state:
+    st.session_state.selected_date_idx = 6 # デフォルトは「今日」
+
+# --- 3. UI実装 ---
+st.title("🏀 Team Effort Coach")
+
+# A. ユーザー・コーチ情報 (固定表示)
+with st.container():
+    col1, col2 = st.columns(2)
+    col1.metric("Player", "息子さん")
+    col2.metric("Coach", "安西コーチ")
+    st.info(f"🎯 **目標:** ハンドリング18秒切り！")
+
+# B. 横スクロールカレンダー (データ連動)
+df_weekly = get_weekly_data("user_001")
+
+# CSSで横スクロールを強制
 st.markdown("""
     <style>
-    /* 横スクロール可能なコンテナ */
-    .scroll-container {
-        display: flex;
-        overflow-x: auto;
-        gap: 15px;
-        padding: 10px 5px;
-        white-space: nowrap;
-        -webkit-overflow-scrolling: touch; /* iOSのスクロールを滑らかに */
+    .scroll-wrapper { display: flex; overflow-x: auto; gap: 10px; padding: 10px 0; }
+    .day-btn { 
+        min-width: 60px; height: 80px; border-radius: 15px; 
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        border: 2px solid #ddd; background: white; cursor: pointer;
     }
-    /* 各日付のカード */
-    .day-card {
-        min-width: 55px;
-        text-align: center;
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 10px 5px;
-        box-shadow: 0px 2px 4px rgba(0,0,0,0.1);
-        border: 1px solid #eee;
-    }
-    .day-label { font-size: 0.7rem; color: #666; margin-bottom: 5px; }
-    .day-status { font-size: 1.2rem; margin: 5px 0; }
-    .day-num { font-size: 0.9rem; font-weight: bold; }
-    /* 練習した日の強調 */
-    .done { background-color: #e6f9ec; border-color: #28a745; }
+    .selected { border-color: #ff4b4b; background-color: #fff0f0; }
     </style>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-st.subheader("🗓️ 今週の進捗")
+# Streamlitのボタンで選択を切り替える(モバイルで押しやすくするため)
+cols = st.columns(7)
+for i, row in df_weekly.iterrows():
+    label = f"{row['date'].strftime('%a')}\n{'🏀' if row['is_done'] else '⚪'}\n{row['date'].day}"
+    if cols[i].button(label, key=f"btn_{i}"):
+        st.session_state.selected_date_idx = i
 
-# データ準備（本来はスプレッドシートから取得）
-today = datetime.date.today()
-days = [(today - datetime.timedelta(days=i)) for i in range(6, -1, -1)]
-# 仮の達成データ（Metricsシートのデータと照合する想定）
-done_days = [True, False, True, True, False, True, True] 
+# C. 選択された日の詳細表示 (カード形式)
+selected_row = df_weekly.iloc[st.session_state.selected_date_idx]
 
-# --- HTMLの組み立て ---
-html_str = '<div class="scroll-container">'
-for i, day in enumerate(days):
-    is_done = done_days[i]
-    status_icon = "🏀" if is_done else "⚪"
-    status_class = "day-card done" if is_done else "day-card"
+st.markdown("---")
+with st.container():
+    st.subheader(f"📅 {selected_row['date'].strftime('%m/%d')} の記録")
     
-    html_str += f"""
-        <div class="{status_class}">
-            <div class="day-label">{day.strftime('%a')}</div>
-            <div class="day-status">{status_icon}</div>
-            <div class="day-num">{day.day}</div>
-        </div>
-    """
-html_str += '</div>'
+    if selected_row['is_done']:
+        c1, c2 = st.columns(2)
+        c1.markdown(f"**ハンドリング:**\n## {selected_row['speed']} 秒")
+        c2.markdown(f"**コーチの評価:**\n> {selected_row['comment']}")
+    else:
+        st.warning("この日の練習記録はありません。")
 
-# 描画
-st.markdown(html_str, unsafe_allow_html=True)
-
-st.info("💡 横にスワイプして過去の記録を確認できます")
+# D. アクションボタン (一番押しやすい場所に配置)
+st.markdown("---")
+if st.button("🚀 今日の練習を記録する", use_container_width=True, type="primary"):
+    st.session_state.show_input_form = True # 入力フォームへ誘導
