@@ -2,115 +2,91 @@ import streamlit as st
 import google.generativeai as genai
 import pandas as pd
 from streamlit_gsheets import GSheetsConnection
-from PIL import Image
 import re
 
-# ==========================================
-# 1. 初期設定（Secretsからの読み込み）
-# ==========================================
+# 1. ページ設定（必ず一番上に書く）
 st.set_page_config(page_title="AI Trainer Pro", layout="wide")
 
-# ① Gemini APIキーの設定
-if "GEMINI_API_KEY" in st.secrets:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-else:
-    st.error("Secretsに 'GEMINI_API_KEY' が設定されていません。")
-    st.stop()
+# 2. 初期設定（Secretsから読み込み）
+try:
+    # APIキーの取得
+    if "GEMINI_API_KEY" in st.secrets:
+        API_KEY = st.secrets["GEMINI_API_KEY"]
+    else:
+        st.error("Secretsに 'GEMINI_API_KEY' が設定されていません。")
+        st.stop()
 
-genai.configure(api_key=API_KEY)
-
-# ② モデルの定義（ご指定の Gemini 3 を使用）
-# ※PermissionDeniedが出る場合は、AI Studio側でこのモデルの利用権限を確認してください
-model = genai.GenerativeModel("gemini-3-flash-preview")
-
-# ③ スプレッドシートURLの取得
-if "connections" in st.secrets and "gsheets" in st.secrets.connections:
-    SPREADSHEET_URL = st.secrets.connections.gsheets.spreadsheet
-else:
-    st.error("Secretsにスプレッドシートの接続情報[connections.gsheets]がありません。")
-    st.stop()
-
-# ④ Googleスプレッドシート接続
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-# ==========================================
-# 2. データ読み込み関数
-# ==========================================
-def load_data():
+    genai.configure(api_key=API_KEY)
+    
+    # ご指定のモデル「Gemini 3」を使用
+    # ※正式名称が異なる場合、ここでエラーが出やすいため try で囲んでいます
     try:
-        profiles = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Profiles", ttl=0)
-        settings = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Settings", ttl=0)
-        return profiles, settings
-    except Exception as e:
-        st.error(f"データの読み込みに失敗しました。URLや権限を確認してください: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+        model = genai.GenerativeModel("gemini-3-flash-preview")
+    except:
+        model = None
 
-# ==========================================
-# 3. アプリのメインロジック
-# ==========================================
+    # スプレッドシートURLの取得
+    if "connections" in st.secrets and "gsheets" in st.secrets.connections:
+        SPREADSHEET_URL = st.secrets.connections.gsheets.spreadsheet
+    else:
+        st.error("SecretsにスプレッドシートのURLが見つかりません。")
+        st.stop()
+
+    conn = st.connection("gsheets", type=GSheetsConnection)
+
+except Exception as e:
+    st.error(f"初期設定でエラーが発生しました: {e}")
+
+# 3. アプリのタイトル
 st.title("🏃‍♂️ AI Trainer Pro")
 
-# セッション状態の初期化
-if "db" not in st.session_state:
-    st.session_state.db = {"daily_message": "メニューを生成してください", "tasks": []}
+# 4. タブの作成（これを最初に定義することで、表示が消えるのを防ぎます）
+tab1, tab2, tab3 = st.tabs(["プロフィール", "カレンダー", "項目管理"])
 
-tab1, tab2, tab3 = st.tabs(["プロフィール", "本日のメニュー", "項目管理"])
-
-# --- Tab 1: プロフィール設定 ---
+# --- Tab 1: プロフィール ---
 with tab1:
-    profiles_df, _ = load_data()
-    st.subheader("ユーザー設定")
-    user_id = st.text_input("ログインIDを入力してください", value="User1")
-    
-    if st.button("設定を保存"):
-        st.success("プロフィールの保存ロジックを実行しました（実装に合わせて調整してください）")
+    st.subheader("ユーザープロフィール")
+    try:
+        profiles_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Profiles", ttl=0)
+        user_id = st.text_input("ユーザーID", value="User1")
+        if not profiles_df.empty:
+            st.dataframe(profiles_df)
+        else:
+            st.info("Profilesシートにデータがありません。")
+    except Exception as e:
+        st.warning(f"プロフィールの読み込みに失敗しました: {e}")
 
-# --- Tab 2: 本日のメニュー生成 (Gemini 3 連携) ---
+# --- Tab 2: カレンダー (メニュー生成) ---
 with tab2:
-    st.subheader("AIトレーナーからの指示")
-    
-    if st.button("メニューを更新・生成"):
-        with st.spinner("Gemini 3 が今日のメニューを構築中..."):
-            try:
-                # ユーザーの目標などをプロンプトに組み込む
-                prompt = "今日の運動タスクを4つと、熱い励ましの伝言を [MESSAGE]...[/MESSAGE] というタグで囲んで出力してください。"
-                res = model.generate_content(prompt)
-                
-                if not res.parts:
-                    st.error("AIの回答がブロックされました。")
-                else:
-                    full_text = res.text
-                    # メッセージの抽出
-                    msg_match = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", full_text, re.DOTALL)
-                    if msg_match:
-                        st.session_state.db["daily_message"] = msg_match.group(1).strip()
-                    else:
-                        st.session_state.db["daily_message"] = full_text
+    st.subheader("🗓 今日のメニュー")
+    if "db" not in st.session_state:
+        st.session_state.db = {"daily_message": "ボタンを押してメニューを生成してください", "tasks": []}
 
-                    # タスクの抽出
+    if st.button("Gemini 3 でメニュー生成"):
+        if model is None:
+            st.error("Gemini 3 モデルの初期化に失敗しています。モデル名を確認してください。")
+        else:
+            with st.spinner("AIがトレーニングを構築中..."):
+                try:
+                    res = model.generate_content("タスク4つと励ましを [MESSAGE]...[/MESSAGE] で出力して。")
+                    full_text = res.text
+                    msg_match = re.search(r"\[MESSAGE\](.*?)\[/MESSAGE\]", full_text, re.DOTALL)
+                    st.session_state.db["daily_message"] = msg_match.group(1).strip() if msg_match else full_text
                     tasks = [l.strip("- *") for l in full_text.split("\n") if l.strip().startswith(("-", "*"))]
                     st.session_state.db["tasks"] = [{"task": t, "done": False} for t in tasks[:4]]
                     st.rerun()
-            except Exception as e:
-                st.error(f"生成エラーが発生しました: {e}")
-                if "PermissionDenied" in str(e):
-                    st.warning("APIキーに Gemini 3 の利用権限がない可能性があります。Google AI Studioを確認してください。")
+                except Exception as e:
+                    st.error(f"AI生成エラー: {e}")
 
-    # 表示部分
     st.info(st.session_state.db["daily_message"])
     for i, t in enumerate(st.session_state.db["tasks"]):
         st.checkbox(t["task"], key=f"task_{i}")
 
-# --- Tab 3: 項目管理 (Settings) ---
+# --- Tab 3: 項目管理 ---
 with tab3:
-    _, settings_df = load_data()
-    st.subheader("マスタデータ管理")
-    st.dataframe(settings_df)
-    
-    if st.button("スプレッドシートを更新"):
-        try:
-            conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Settings", data=settings_df)
-            st.success("Settingsシートを更新しました")
-        except Exception as e:
-            st.error(f"更新エラー: {e}")
-
+    st.subheader("設定マスタ")
+    try:
+        settings_df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Settings", ttl=0)
+        st.dataframe(settings_df)
+    except Exception as e:
+        st.warning(f"Settingsシートの読み込みに失敗しました: {e}")
