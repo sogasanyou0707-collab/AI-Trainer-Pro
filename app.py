@@ -2,10 +2,42 @@ import streamlit as st
 import pandas as pd
 import datetime
 from streamlit_gsheets import GSheetsConnection
-import streamlit.components.v1 as components  # 追加：HTML専用コンポーネント
 import time
 
-# --- 1. データ接続と読み込み ---
+# --- 1. CSS設定（ボタンを横に強制整列させ、視認性を確保） ---
+st.markdown("""
+    <style>
+    /* コーチ・目標カードの見栄え */
+    .status-box {
+        background-color: #e1e4eb !important;
+        color: #000000 !important;
+        padding: 12px;
+        border-radius: 10px;
+        border-left: 5px solid #ff4b4b;
+        margin-bottom: 10px;
+        min-height: 80px;
+    }
+    .status-box b { color: #000 !important; font-size: 1.1rem; }
+
+    /* ★重要：ボタンをスマホでも横に並べる魔法のCSS */
+    div[data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        gap: 8px !important;
+    }
+    div[data-testid="stHorizontalBlock"] > div {
+        min-width: 65px !important;
+    }
+    /* ボタン自体のデザイン調整 */
+    button[kind="secondary"] {
+        height: 85px !important;
+        border-radius: 12px !important;
+        padding: 5px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 2. データ接続と読み込み ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 @st.cache_data(ttl=5)
@@ -23,49 +55,21 @@ def load_data():
 profiles_df, metrics_df = load_data()
 if profiles_df is None: st.stop()
 
-# --- 2. ユーザー選択とステータス表示 ---
+# --- 3. ユーザー選択とステータス ---
 st.title("🏀 Basketball AI Coach")
 
 user_list = profiles_df['user_id'].unique().tolist()
 selected_user = st.selectbox("👤 ユーザーを選択", user_list)
-user_idx = profiles_df[profiles_df['user_id'] == selected_user].index[0]
-user_info = profiles_df.loc[user_idx]
+user_info = profiles_df[profiles_df['user_id'] == selected_user].iloc[0]
 
-# ステータス表示（視認性を極限まで高めた黒文字固定）
-col1, col2 = st.columns(2)
-st.markdown(f"""
-    <style>
-    .status-box {{
-        background-color: #e1e4eb !important;
-        color: #000000 !important;
-        padding: 10px;
-        border-radius: 8px;
-        border-left: 5px solid #ff4b4b;
-        margin-bottom: 10px;
-        min-height: 70px;
-    }}
-    </style>
-    <div style="display: flex; gap: 10px;">
-        <div class="status-box" style="flex: 1;"><small style="color:#555;">コーチ</small><br><b>{user_info.get('coach_name', '未設定')}</b></div>
-        <div class="status-box" style="flex: 1;"><small style="color:#555;">今の目標</small><br><b>{user_info.get('goal', '未設定')}</b></div>
-    </div>
-""", unsafe_allow_html=True)
-
-# 設定変更
-with st.expander("⚙️ 設定を変更"):
-    with st.form("settings"):
-        new_coach = st.selectbox("コーチを選択", ["安西コーチ", "熱血コーチ", "冷静コーチ"])
-        new_goal = st.text_input("目標を更新", value=user_info.get('goal', ''))
-        if st.form_submit_button("保存"):
-            profiles_df.at[user_idx, 'coach_name'] = new_coach
-            profiles_df.at[user_idx, 'goal'] = new_goal
-            conn.update(worksheet="Profiles", data=profiles_df)
-            st.cache_data.clear()
-            st.rerun()
+# 視認性を高めたステータス表示
+c1, c2 = st.columns(2)
+with c1: st.markdown(f'<div class="status-box"><small>コーチ</small><br><b>{user_info.get("coach_name", "安西")}</b></div>', unsafe_allow_html=True)
+with c2: st.markdown(f'<div class="status-box"><small>今の目標</small><br><b>{user_info.get("goal", "未設定")}</b></div>', unsafe_allow_html=True)
 
 st.divider()
 
-# --- 3. 横スクロールカレンダー（コンポーネント方式） ---
+# --- 4. ラグなし！直感タップカレンダー ---
 st.subheader("🗓️ 今週の進捗")
 
 today = datetime.date.today()
@@ -75,37 +79,37 @@ user_metrics = metrics_df[metrics_df['user_id'] == selected_user]
 if "selected_date" not in st.session_state:
     st.session_state.selected_date = today
 
-# HTML/CSSを一つの文字列として定義
-html_elements = ""
-for d in date_range:
+# 横並びのカラムを作成（CSSで横スクロール化済み）
+cols = st.columns(7)
+for i, d in enumerate(date_range):
+    # 練習データがあるかチェック
     has_p = not user_metrics[user_metrics['date'] == d].empty
     icon = "🏀" if has_p else "⚪"
-    is_active = "border: 2.5px solid #ff4b4b; background-color: #fff0f0;" if st.session_state.selected_date == d else "border: 1px solid #ddd; background-color: #f0f2f6;"
     
-    html_elements += f"""
-    <div style="min-width: 65px; {is_active} border-radius: 12px; text-align: center; padding: 10px 0; color: #333;">
-        <div style="font-size: 0.8rem; color: #666;">{d.strftime('%a')}</div>
-        <div style="font-size: 1.5rem; margin: 5px 0;">{icon}</div>
-        <div style="font-weight: bold; font-size: 1rem;">{d.day}</div>
-    </div>
-    """
+    # ボタンのラベル（曜日 / アイコン / 日付）
+    btn_label = f"{d.strftime('%a')}\n{icon}\n{d.day}"
+    
+    # タップ時に即座にsession_stateを更新
+    if cols[i].button(btn_label, key=f"d_btn_{i}", type="primary" if st.session_state.selected_date == d else "secondary"):
+        st.session_state.selected_date = d
+        st.rerun()
 
-calendar_html = f"""
-<div style="display: flex; overflow-x: auto; gap: 12px; padding: 10px 5px; font-family: sans-serif; -webkit-overflow-scrolling: touch;">
-    {html_elements}
-</div>
-"""
+# --- 5. 選択された日の詳細表示 ＆ 入力 ---
+day_data = user_metrics[user_metrics['date'] == st.session_state.selected_date]
 
-# HTMLコンポーネントとして描画（これが最も確実な方法です）
-components.html(calendar_html, height=120)
+with st.container():
+    st.markdown(f"### 📅 {st.session_state.selected_date} の記録")
+    if not day_data.empty:
+        for _, row in day_data.iterrows():
+            st.success(f"✅ **{row['metric_name']}**: {row['value']} 秒")
+    else:
+        st.info("練習記録がありません。")
 
-# 日付選択用スライダー
-selected_d = st.select_slider("詳細を見る日付を選択", options=date_range, value=st.session_state.selected_date, format_func=lambda x: x.strftime('%m/%d'))
-st.session_state.selected_date = selected_d
-
-# --- 4. 記録入力 ---
 st.divider()
-input_speed = st.number_input("🚀 今日のハンドリング (秒)", min_value=0.0, value=20.0, step=0.1)
+
+# --- 6. 今日の入力フォーム ---
+st.subheader("🚀 今日の記録を保存")
+input_speed = st.number_input("ハンドリングスピード (秒)", min_value=0.0, value=20.0, step=0.1)
 
 if st.button("このタイムを保存する", use_container_width=True, type="primary"):
     new_entry = pd.DataFrame([{"user_id": selected_user, "date": today.strftime('%Y-%m-%d'), "metric_name": "ハンドリング", "value": input_speed}])
@@ -114,12 +118,3 @@ if st.button("このタイムを保存する", use_container_width=True, type="p
     st.cache_data.clear()
     st.balloons()
     st.rerun()
-
-# 詳細表示
-day_data = user_metrics[user_metrics['date'] == st.session_state.selected_date]
-with st.container():
-    if not day_data.empty:
-        for _, row in day_data.iterrows():
-            st.write(f"✅ **{row['metric_name']}**: {row['value']} 秒")
-    else:
-        st.caption("この日の記録はありません")
