@@ -1,12 +1,20 @@
 import streamlit as st
 import pandas as pd
 import datetime
-from streamlit_gsheets import GSheetsConnection
 import time
+import google.generativeai as genai
+from streamlit_gsheets import GSheetsConnection
 
-# --- 1. CSS設定（モバイル視認性・横スクロール・高コントラスト） ---
+# --- 0. 基本設定 & CSS (モバイル最適化) ---
+st.set_page_config(page_title="AI Basketball Coach", layout="centered")
+
+# AI設定 (Secretsから取得)
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel('gemini-1.5-flash')
+
 st.markdown("""
     <style>
+    /* ステータスカード：高コントラスト設定 */
     .status-box {
         background-color: #e1e4eb !important;
         color: #000000 !important;
@@ -18,7 +26,7 @@ st.markdown("""
     }
     .status-box b { color: #000 !important; font-size: 1.1rem; }
 
-    /* 横スクロールの強制（ボタンが縦に並ぶのを防ぐ） */
+    /* 横スクロールカレンダーの強制 */
     div[data-testid="stHorizontalBlock"] {
         flex-wrap: nowrap !important;
         overflow-x: auto !important;
@@ -35,145 +43,153 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. データ接続と読み込み ---
+# --- 1. データ接続・集計ロジック ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 @st.cache_data(ttl=5)
-def load_data():
+def load_all_data():
     try:
         p = conn.read(worksheet="Profiles")
         m = conn.read(worksheet="Metrics")
+        h = conn.read(worksheet="History") # 履歴シートも読み込み
         p.columns = [c.strip().lower() for c in p.columns]
         m.columns = [c.strip().lower() for c in m.columns]
+        h.columns = [c.strip().lower() for c in h.columns]
         if 'date' in m.columns:
             m['date'] = pd.to_datetime(m['date']).dt.date
-        return p, m
-    except: return None, None
+        if 'date' in h.columns:
+            h['date'] = pd.to_datetime(h['date']).dt.date
+        return p, m, h
+    except:
+        return None, None, None
 
-profiles_df, metrics_df = load_data()
-if profiles_df is None: st.stop()
+def calculate_stats(m_df, user_id, metric_name):
+    user_data = m_df[(m_df['user_id'] == user_id) & (m_df['metric_name'] == metric_name)]
+    if user_data.empty:
+        return {"is_first_time": True, "best": None, "avg": None}
+    return {
+        "is_first_time": False,
+        "best": user_data['value'].min(),
+        "avg": round(user_data['value'].tail(7).mean(), 2)
+    }
 
-# --- 3. ユーザー管理（選択 ＆ 新規登録） ---
+def get_ai_feedback(coach, goal, val, stats):
+    if stats["is_first_time"]:
+        context = f"初挑戦の記録（{val}秒）です。比較対象はありません。"
+    else:
+        context = f"今日の記録{val}秒。自己ベスト{stats['best']}秒、直近7回平均{stats['avg']}秒です。"
+
+    prompt = f"""
+    あなたはバスケの「{coach}」です。目標は「{goal}」。
+    {context}
+    1. 数値を分析し、成長を褒めてください。
+    2. 次に繋がる具体的な「提案」を1つ伝えてください。
+    3. {coach}らしい口調で150文字以内で回答してください。
+    """
+    try:
+        return model.generate_content(prompt).text
+    except:
+        return "素晴らしい努力です。明日も続けましょう！"
+
+# --- 2. データの読み込み ---
+profiles_df, metrics_df, history_df = load_all_data()
+if profiles_df is None:
+    st.error("データの読み込みに失敗しました。")
+    st.stop()
+
+# --- 3. ユーザー管理 ＆ ステータス表示 ---
 st.title("🏀 Basketball AI Coach")
 
 user_list = profiles_df['user_id'].unique().tolist()
 selected_user = st.selectbox("👤 ユーザーを選択", user_list)
 
-# 【復活】新規ユーザー登録
-with st.expander("✨ 新規ユーザーを登録する"):
-    with st.form("new_user_form"):
-        new_id = st.text_input("ユーザーID（英数字）")
-        new_goal_text = st.text_input("最初の目標")
-        if st.form_submit_button("新規登録"):
-            if new_id and new_id not in user_list:
-                new_user = pd.DataFrame([{"user_id": new_id, "goal": new_goal_text, "coach_name": "安西コーチ"}])
-                updated_p = pd.concat([profiles_df, new_user], ignore_index=True)
-                conn.update(worksheet="Profiles", data=updated_p)
+# 新規登録 expander
+with st.expander("✨ 新規登録"):
+    with st.form("reg_form"):
+        u_id = st.text_input("新ユーザーID")
+        u_goal = st.text_input("目標")
+        if st.form_submit_button("登録"):
+            if u_id and u_id not in user_list:
+                new_p = pd.DataFrame([{"user_id": u_id, "goal": u_goal, "coach_name": "安西コーチ"}])
+                conn.update(worksheet="Profiles", data=pd.concat([profiles_df, new_p], ignore_index=True))
                 st.cache_data.clear()
-                st.success(f"{new_id}さんを登録しました！")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.error("有効なIDを入力してください（重複は不可）")
+                st.success("登録完了！"); time.sleep(1); st.rerun()
 
-user_idx = profiles_df[profiles_df['user_id'] == selected_user].index[0]
-user_info = profiles_df.loc[user_idx]
+user_info = profiles_df[profiles_df['user_id'] == selected_user].iloc[0]
 
-# --- 4. ステータス表示 ＆ 設定変更 ---
+# ダッシュボード
 c1, c2 = st.columns(2)
 with c1: st.markdown(f'<div class="status-box"><small>コーチ</small><br><b>{user_info.get("coach_name", "安西")}</b></div>', unsafe_allow_html=True)
 with c2: st.markdown(f'<div class="status-box"><small>目標</small><br><b>{user_info.get("goal", "未設定")}</b></div>', unsafe_allow_html=True)
 
-# 【復活】コーチ・目標の変更
-with st.expander("⚙️ コーチ・目標の設定を変更"):
-    with st.form("settings_form"):
-        new_coach = st.selectbox("コーチを選択", ["安西コーチ", "熱血コーチ", "冷静コーチ"], 
-                                 index=0 if user_info.get("coach_name") == "安西コーチ" else 1)
-        new_goal = st.text_input("目標を更新", value=user_info.get("goal", ""))
-        if st.form_submit_button("設定を保存"):
-            profiles_df.at[user_idx, 'coach_name'] = new_coach
-            profiles_df.at[user_idx, 'goal'] = new_goal
+with st.expander("⚙️ 設定変更"):
+    with st.form("set_form"):
+        n_coach = st.selectbox("コーチ変更", ["安西コーチ", "熱血コーチ", "冷静コーチ"])
+        n_goal = st.text_input("目標変更", value=user_info.get("goal", ""))
+        if st.form_submit_button("保存"):
+            idx = profiles_df[profiles_df['user_id'] == selected_user].index[0]
+            profiles_df.at[idx, 'coach_name'] = n_coach
+            profiles_df.at[idx, 'goal'] = n_goal
             conn.update(worksheet="Profiles", data=profiles_df)
             st.cache_data.clear()
-            st.success("設定を更新しました！")
-            time.sleep(1)
-            st.rerun()
+            st.success("更新！"); time.sleep(1); st.rerun()
 
 st.divider()
 
-# --- 5. カレンダー機能（期間延長 ＆ 過去データ対応） ---
-st.subheader("🗓️ 進捗（過去14日間）")
-
-# 【解決案】表示期間を14日間に延長
+# --- 4. カレンダー (14日間) ---
+st.subheader("🗓️ 週間進捗")
 today = datetime.date.today()
 date_range = [(today - datetime.timedelta(days=i)) for i in range(13, -1, -1)]
-user_metrics = metrics_df[metrics_df['user_id'] == selected_user]
 
 if "selected_date" not in st.session_state:
     st.session_state.selected_date = today
 
-# 14日分のカラムを作成
 cols = st.columns(14)
 for i, d in enumerate(date_range):
-    has_p = not user_metrics[user_metrics['date'] == d].empty
-    icon = "🏀" if has_p else "⚪"
-    btn_label = f"{d.strftime('%a')}\n{icon}\n{d.day}"
-    
-    # 選択中の日付を強調
-    is_active = st.session_state.selected_date == d
-    if cols[i].button(btn_label, key=f"d_btn_{i}", type="primary" if is_active else "secondary"):
+    has_p = not metrics_df[(metrics_df['user_id'] == selected_user) & (metrics_df['date'] == d)].empty
+    btn_label = f"{d.strftime('%a')}\n{'🏀' if has_p else '⚪'}\n{d.day}"
+    if cols[i].button(btn_label, key=f"d_{i}", type="primary" if st.session_state.selected_date == d else "secondary"):
         st.session_state.selected_date = d
         st.rerun()
 
-# さらに古いデータを見たい場合のカレンダー入力
-with st.expander("📅 もっと前のデータを探す"):
-    past_date = st.date_input("日付を選択", value=st.session_state.selected_date)
-    if past_date != st.session_state.selected_date:
-        st.session_state.selected_date = past_date
-        st.rerun()
+# --- 5. 入力 & AI分析ポップアップ ---
+st.subheader("🚀 今日の記録")
+input_val = st.number_input("ハンドリング (秒)", min_value=0.0, value=20.0, step=0.1)
 
-# --- 6. 詳細表示 ＆ データ保存 ---
-day_data = user_metrics[user_metrics['date'] == st.session_state.selected_date]
+# フィードバック用ダイアログ
+@st.dialog("コーチからのアドバイス")
+def show_feedback_dialog(msg, coach):
+    st.write(f"### 🔥 {coach}")
+    st.info(msg)
+    if st.button("明日もやる！"): st.rerun()
 
-with st.container():
-    st.markdown(f"### 📊 {st.session_state.selected_date} の記録")
-    if not day_data.empty:
-        for _, row in day_data.iterrows():
-            st.success(f"✅ **{row['metric_name']}**: {row['value']} 秒")
-    else:
-        st.info("この日の記録はありません。")
+if st.button("タイムを保存する", use_container_width=True, type="primary"):
+    with st.spinner("AIコーチが分析中..."):
+        # A. 統計計算
+        stats = calculate_stats(metrics_df, selected_user, "ハンドリング")
+        # B. AIアドバイス生成
+        coach_msg = get_ai_feedback(user_info.get("coach_name"), user_info.get("goal"), input_val, stats)
+        # C. Metrics保存
+        new_m = pd.DataFrame([{"user_id": selected_user, "date": today, "metric_name": "ハンドリング", "value": input_val}])
+        conn.update(worksheet="Metrics", data=pd.concat([metrics_df, new_m], ignore_index=True))
+        # D. History保存
+        new_h = pd.DataFrame([{"user_id": selected_user, "date": today, "metric_name": "ハンドリング", "value": input_val, "coach_comment": coach_msg}])
+        conn.update(worksheet="History", data=pd.concat([history_df, new_h], ignore_index=True))
+        
+        st.cache_data.clear()
+        st.balloons()
+        show_feedback_dialog(coach_msg, user_info.get("coach_name"))
 
+# --- 6. 詳細表示 (履歴からのアドバイスも表示) ---
 st.divider()
+day_m = metrics_df[(metrics_df['user_id'] == selected_user) & (metrics_df['date'] == st.session_state.selected_date)]
+day_h = history_df[(history_df['user_id'] == selected_user) & (history_df['date'] == st.session_state.selected_date)]
 
-# 自由な数値入力
-st.subheader("🚀 今日の記録を保存")
-input_speed = st.number_input("ハンドリングスピード (秒)", min_value=0.0, value=20.0, step=0.1)
-
-if st.button("このタイムを保存する", use_container_width=True, type="primary"):
-def get_analysis_data(metrics_df, user_id, metric_name, current_val):
-    # 1. 該当ユーザーかつ、指定した項目（ハンドリング）の全データを抽出
-    user_history = metrics_df[
-        (metrics_df['user_id'] == user_id) & 
-        (metrics_df['metric_name'] == metric_name)
-    ]
-    
-    # 2. 初めての入力かどうかを判定
-    if user_history.empty:
-        return {
-            "is_first_time": True,
-            "best": None,
-            "avg": None,
-            "diff_best": None
-        }
-    
-    # 3. データがある場合は統計を計算
-    # ハンドリングは「数値が小さいほど良い」ので min() を使用
-    personal_best = user_history['value'].min()
-    avg_lately = user_history.tail(7)['value'].mean() # 直近7回の平均
-    
-    return {
-        "is_first_time": False,
-        "best": personal_best,
-        "avg": round(avg_lately, 2),
-        "diff_best": round(current_val - personal_best, 2) # ベストとの差
-    }
+st.write(f"### 📊 {st.session_state.selected_date} の詳細")
+if day_m.empty:
+    st.caption("記録なし")
+else:
+    for _, row in day_m.iterrows():
+        st.success(f"**{row['metric_name']}**: {row['value']} 秒")
+    if not day_h.empty:
+        st.info(f"💡 コーチの言葉:\n{day_h.iloc[0]['coach_comment']}")
