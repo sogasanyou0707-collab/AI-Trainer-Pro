@@ -6,24 +6,22 @@ import gspread
 from google.oauth2.service_account import Credentials
 import google.generativeai as genai
 
-# --- 1. 設定とキャッシュの管理 ---
+# --- 1. 設定管理 (キャッシュ用) ---
 CONFIG_FILE = "app_settings.json"
-SPREADSHEET_NAME = "AI_Trainer_DB"
+# 以前ご指定いただいたシート名
 SHEET_NAME = "Profiles"
 
 def load_cache():
-    """ローカルに保存された設定（前回選択モデルなど）を読み込む"""
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"selected_model": "gemini-3-pro", "line_token": "", "line_user_id": ""}
 
 def save_cache(settings):
-    """設定をローカルに保存する"""
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=4, ensure_ascii=False)
 
-# --- 2. 外部連携ロジック（Secrets使用） ---
+# --- 2. 外部連携ロジック ---
 def get_latest_models():
     """SecretsのAPIキーを使用し、1.5系以外の最新モデルを動的に取得"""
     try:
@@ -32,7 +30,7 @@ def get_latest_models():
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 model_id = m.name.replace('models/', '')
-                # 1.5系を排除し、最新(2.5/3.0等)のみを抽出
+                # 1.5系（Flash等）を除外し、2.5や3.0系を抽出
                 if "1.5" not in model_id:
                     models.append(model_id)
         return models
@@ -40,76 +38,85 @@ def get_latest_models():
         return ["gemini-3-pro"]
 
 def sync_from_sheets():
-    """Secrets内のサービスアカウント情報を使用し、Profilesシート(E列, F列)から情報を取得"""
+    """[connections.gsheets] セクションから情報を取得し、E2・F2を読み込む"""
     try:
-        # st.secrets["gcp_service_account"] (辞書形式) を使用して認証
-        creds_info = st.secrets["gcp_service_account"]
+        # Secrets の階層に合わせて取得先を修正
+        if "connections" not in st.secrets or "gsheets" not in st.secrets["connections"]:
+            st.error("Secrets 内に [connections.gsheets] が見つかりません。設定を確認してください。")
+            return None, None
+
+        creds_info = st.secrets["connections"]["gsheets"]
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        
+        # credentials情報のみを抽出して認証
         creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         client = gspread.authorize(creds)
         
-        # スプレッドシートを開く
-        sheet = client.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
+        # Secrets内の URL を使用してスプレッドシートを開く
+        if "spreadsheet" in creds_info:
+            sh = client.open_by_url(creds_info["spreadsheet"])
+        else:
+            # URLがない場合のフォールバック（以前の名前指定）
+            sh = client.open("AI_Trainer_DB")
+            
+        sheet = sh.worksheet(SHEET_NAME)
         
-        # E2列: LINE Token, F2列: LINE User ID を取得
+        # E2: LINE Token, F2: LINE User ID を取得
         token = sheet.acell('E2').value
         user_id = sheet.acell('F2').value
         return token, user_id
+        
     except Exception as e:
-        st.error(f"スプレッドシート同期エラー: {e}")
+        st.error(f"同期失敗: {e}")
         return None, None
 
 def send_line(message, token, user_id):
-    """LINEへのプッシュ送信"""
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     data = {"to": user_id, "messages": [{"type": "text", "text": message}]}
     res = requests.post(url, headers=headers, json=data)
     return res.status_code == 200
 
-# --- 3. メイン UI 構築 ---
+# --- 3. UI 構築 ---
 st.set_page_config(page_title="AI Trainer Pro", layout="centered")
 cache = load_cache()
 
 st.title("AI Trainer 業務報告")
 
-# 報告入力エリア
-report_text = st.text_area("本日のサマリー（LINEに送信されます）", placeholder="こちらに内容を入力...")
+# メイン画面
+report_text = st.text_area("報告内容", placeholder="内容を入力してください")
 
-if st.button("LINEで報告を送信"):
+if st.button("LINE送信"):
     if cache["line_token"] and cache["line_user_id"]:
-        full_msg = f"【AI報告】\n使用モデル: {cache['selected_model']}\n内容: {report_text}"
-        if send_line(full_msg, cache["line_token"], cache["line_user_id"]):
-            st.success("LINEに送信完了しました")
+        msg = f"【AI報告】\nモデル: {cache['selected_model']}\n内容: {report_text}"
+        if send_line(msg, cache["line_token"], cache["line_user_id"]):
+            st.success("LINEに送信しました")
         else:
             st.error("送信に失敗しました")
     else:
-        st.warning("設定画面から情報を同期してください")
+        st.warning("設定から情報を同期してください")
 
-# --- 4. サイドバー（目立たない設定画面） ---
+# サイドバー設定
 with st.sidebar:
-    st.write("### システム管理")
     with st.expander("⚙️ 詳細設定", expanded=False):
-        st.caption("モデル・外部連携の同期")
-        
-        # 1. モデル選択（動的に取得）
+        # 1. 最新モデル選択
         models = get_latest_models()
-        current_model = cache.get("selected_model", "gemini-3-pro")
-        idx = models.index(current_model) if current_model in models else 0
+        current = cache.get("selected_model", "gemini-3-pro")
+        idx = models.index(current) if current in models else 0
         
-        selected = st.selectbox("使用モデルを選択", models, index=idx)
-        if selected != current_model:
+        selected = st.selectbox("使用モデル", models, index=idx)
+        if selected != current:
             cache["selected_model"] = selected
             save_cache(cache)
-            st.toast(f"モデルを {selected} に設定しました")
+            st.toast(f"モデルを {selected} に設定")
 
         st.write("---")
         
-        # 2. LINE情報の同期ボタン
-        if st.button("Profilesシートから情報を同期"):
+        # 2. LINE情報同期
+        if st.button("Profilesシートから同期"):
             t, u = sync_from_sheets()
             if t and u:
                 cache["line_token"] = t
                 cache["line_user_id"] = u
                 save_cache(cache)
-                st.success("E列・F列から情報を取得しました")
+                st.success("E2・F2 から LINE 情報を取得しました")
