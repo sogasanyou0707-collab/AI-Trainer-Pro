@@ -150,9 +150,30 @@ st.subheader("🚀 今日の記録を保存")
 input_speed = st.number_input("ハンドリングスピード (秒)", min_value=0.0, value=20.0, step=0.1)
 
 if st.button("このタイムを保存する", use_container_width=True, type="primary"):
-    new_entry = pd.DataFrame([{"user_id": selected_user, "date": today.strftime('%Y-%m-%d'), "metric_name": "ハンドリング", "value": input_speed}])
-    updated = pd.concat([metrics_df, new_entry], ignore_index=True)
-    conn.update(worksheet="Metrics", data=updated)
-    st.cache_data.clear()
-    st.balloons()
-    st.rerun()
+def get_analysis_data(metrics_df, user_id, metric_name, current_val):
+    # 1. 該当ユーザーかつ、指定した項目（ハンドリング）の全データを抽出
+    user_history = metrics_df[
+        (metrics_df['user_id'] == user_id) & 
+        (metrics_df['metric_name'] == metric_name)
+    ]
+    
+    # 2. 初めての入力かどうかを判定
+    if user_history.empty:
+        return {
+            "is_first_time": True,
+            "best": None,
+            "avg": None,
+            "diff_best": None
+        }
+    
+    # 3. データがある場合は統計を計算
+    # ハンドリングは「数値が小さいほど良い」ので min() を使用
+    personal_best = user_history['value'].min()
+    avg_lately = user_history.tail(7)['value'].mean() # 直近7回の平均
+    
+    return {
+        "is_first_time": False,
+        "best": personal_best,
+        "avg": round(avg_lately, 2),
+        "diff_best": round(current_val - personal_best, 2) # ベストとの差
+    }
