@@ -7,45 +7,25 @@ from google.oauth2.service_account import Credentials
 import google.generativeai as genai
 from datetime import datetime
 
-# --- 1. 設定・キャッシュ管理 ---
+# --- 1. 設定管理 ---
 CONFIG_FILE = "app_settings.json"
 SHEET_NAME = "Profiles"
 
 def load_cache():
-    """設定を読み込み、不足項目があればデフォルトで補完"""
-    defaults = {
-        "user_name": "未設定",
-        "user_role": "未設定",
-        "selected_model": "gemini-3-pro",
-        "line_token": "",
-        "line_user_id": ""
-    }
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                defaults.update(data)
-        except:
-            pass
-    return defaults
+                return json.load(f)
+        except: pass
+    return {"selected_model": "gemini-3-pro"}
 
 def save_cache(settings):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=4, ensure_ascii=False)
 
-# --- 2. 外部連携ロジック ---
-def get_latest_models():
-    """1.5系を除外した最新モデルを動的に取得"""
-    try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        models = [m.name.replace('models/', '') for m in genai.list_models() 
-                if 'generateContent' in m.supported_generation_methods and "1.5" not in m.name]
-        return models if models else ["gemini-3-pro"]
-    except:
-        return ["gemini-3-pro"]
-
-def sync_all_from_sheets():
-    """スプレッドシートのProfilesシートから全情報を同期"""
+# --- 2. スプレッドシートからの自動同期ロジック ---
+def auto_sync_from_sheets():
+    """起動時に自動でA2, B2, E2, F2を取得する"""
     try:
         creds_info = st.secrets["connections"]["gsheets"]
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
@@ -54,93 +34,116 @@ def sync_all_from_sheets():
         sh = client.open_by_url(creds_info["spreadsheet"])
         sheet = sh.worksheet(SHEET_NAME)
         
-        # 各セルから情報を取得 (A2:名前, B2:役割, E2:トークン, F2:ID)
-        return {
+        # 情報を一括取得してセッションに格納
+        data = {
             "user_name": sheet.acell('A2').value,
             "user_role": sheet.acell('B2').value,
             "line_token": sheet.acell('E2').value,
             "line_user_id": sheet.acell('F2').value
         }
+        return data
     except Exception as e:
-        st.error(f"同期失敗: {e}")
+        st.error(f"自動同期に失敗しました。Secretsを確認してください: {e}")
         return None
 
-def ai_get_suggestions(content, model_name, role):
+# --- 3. AIロジック ---
+def get_latest_models():
+    """1.5系を除外した最新モデルを動的に取得"""
+    try:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        return [m.name.replace('models/', '') for m in genai.list_models() 
+                if 'generateContent' in m.supported_generation_methods and "1.5" not in m.name]
+    except:
+        return ["gemini-3-pro"]
+
+def ai_coach_advice(content, model_name, role):
+    """報告内容に基づきAIがコーチングとタスクを提案"""
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         model = genai.GenerativeModel(model_name)
-        prompt = f"あなたは{role}の専門アシスタントです。以下の業務報告に基づき、明日以降のタスクを3つ具体的に提案してください。\n\n内容:\n{content}"
+        prompt = f"""
+        あなたは{role}の専門コーチです。以下の業務報告に基づき、フィードバックと明日へのタスク提案を行ってください。
+        1. 業務への専門的フィードバック
+        2. 明日優先すべき具体的なタスク3選
+        
+        内容: {content}
+        """
         return model.generate_content(prompt).text
     except Exception as e:
-        return f"提案生成エラー: {e}"
+        return f"AIコーチング失敗: {e}"
 
-# --- 3. UI 構築 ---
+# --- 4. UI 構築 (シンプル＆高速) ---
 st.set_page_config(page_title="AI Trainer Pro", layout="centered")
 
-if 'cache' not in st.session_state:
-    st.session_state.cache = load_cache()
+# A. 自動同期（初回およびリロード時）
+if 'user_info' not in st.session_state:
+    with st.spinner("スプレッドシートから最新情報を同期中..."):
+        info = auto_sync_from_sheets()
+        if info:
+            st.session_state.user_info = info
+            st.session_state.cache = load_cache()
+            st.session_state.cache.update(info) # キャッシュも更新
+
+user = st.session_state.user_info
 cache = st.session_state.cache
 
+# タイトル
 st.title("AI Trainer 業務報告")
 
-# スプレッドシートから読み込んだユーザー情報を表示
-st.write(f"👤 **{cache.get('user_name')}** ({cache.get('user_role')})")
-selected_date = st.date_input("報告日を選択", datetime.now())
+# ユーザー情報表示
+st.info(f"👤 **{user['user_name']}** | 🏷️ **{user['user_role']}**")
+
+# カレンダー
+selected_date = st.date_input("報告日", datetime.now())
 
 st.write("---")
 
-report_text = st.text_area("本日の報告内容", placeholder="こちらに業務内容を入力してください", height=250)
+# 報告入力
+report_text = st.text_area("本日の報告内容", placeholder="解析結果や実施事項を入力...", height=250)
 
-if st.button("🚀 LINEで報告を送信", use_container_width=True):
-    if cache.get("line_token") and cache.get("line_user_id"):
-        msg = f"【{selected_date} 報告】\n担当: {cache['user_name']}\n---\n{report_text}"
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {cache['line_token']}"}
-        data = {"to": cache["line_user_id"], "messages": [{"type": "text", "text": msg}]}
-        
-        with st.spinner("送信中..."):
-            res = requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=data)
-            if res.status_code == 200:
-                st.success("LINEに送信しました！")
-            else:
-                st.error("送信失敗。")
-    else:
-        st.warning("設定画面から情報を同期してください。")
+# アクションボタン
+col1, col2 = st.columns(2)
 
-if st.button("💡 AIにタスクを相談する", use_container_width=True):
-    if report_text:
-        with st.spinner("思考中..."):
-            suggestions = ai_get_suggestions(report_text, cache['selected_model'], cache['user_role'])
-            st.markdown("### AIからの提案")
-            st.info(suggestions)
-    else:
-        st.warning("先に報告内容を入力してください。")
+with col1:
+    if st.button("🚀 LINEで報告を送信", use_container_width=True):
+        if user["line_token"] and user["line_user_id"]:
+            msg = f"【{selected_date} 報告】\n担当: {user['user_name']}\n---\n{report_text}"
+            headers = {"Authorization": f"Bearer {user['line_token']}", "Content-Type": "application/json"}
+            data = {"to": user["line_user_id"], "messages": [{"type": "text", "text": msg}]}
+            if requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=data).status_code == 200:
+                st.success("LINE送信完了")
+            else: st.error("送信失敗")
+        else: st.warning("LINE情報がスプレッドシートにありません")
 
-# --- 4. サイドバー ---
+with col2:
+    if st.button("💡 AIコーチのタスク提案", use_container_width=True):
+        if report_text:
+            with st.spinner("AIが思考中..."):
+                advice = ai_coach_advice(report_text, cache['selected_model'], user['user_role'])
+                st.session_state.advice = advice
+        else: st.warning("内容を入力してください")
+
+# AI提案の表示
+if 'advice' in st.session_state:
+    st.write("---")
+    st.subheader("🤖 AIコーチからのアドバイス")
+    st.markdown(st.session_state.advice)
+
+# --- 5. サイドバー (設定はここへ集約) ---
 with st.sidebar:
-    st.header("⚙️ システム設定")
-    with st.expander("詳細設定を開く", expanded=False):
-        
-        # モデル選択
+    st.header("⚙️ 設定")
+    with st.expander("詳細設定"):
         models = get_latest_models()
-        cur_model = cache.get("selected_model", "gemini-3-pro")
-        idx = models.index(cur_model) if cur_model in models else 0
-        cache["selected_model"] = st.selectbox("使用モデル", models, index=idx)
+        sel = st.selectbox("AIモデル選択", models, index=0)
+        cache["selected_model"] = sel
         
-        st.write("---")
-        
-        # 情報同期ボタン
-        if st.button("LINE情報の同期", use_container_width=True):
-            with st.spinner("スプレッドシートから取得中..."):
-                new_data = sync_all_from_sheets()
-                if new_data:
-                    cache.update(new_data)
-                    save_cache(cache)
-                    st.success("スプレッドシートの全情報を同期しました")
-                    st.rerun()
-        
-        if st.button("設定を保存", use_container_width=True):
+        if st.button("設定を強制保存"):
             save_cache(cache)
-            st.toast("現在の設定を保存しました")
+            st.toast("保存完了")
+    
+    st.write("---")
+    if st.button("🔄 情報を再同期"):
+        st.session_state.pop('user_info')
+        st.rerun()
 
-st.write("---")
-st.caption(f"Model: {cache['selected_model']}")
+st.caption(f"Status: {cache['selected_model']} 稼働中")
