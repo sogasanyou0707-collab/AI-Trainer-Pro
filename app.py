@@ -1,60 +1,68 @@
 import streamlit as st
 
-# ページ設定（既にある場合はそのままでOK）
+# ページ設定
 st.set_page_config(layout="wide")
 
 st.markdown("""
     <style>
-    /* 1. アプリ全体の背景と文字色の基本設定 */
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+    /* 1. アプリ全体の基本色（白背景・黒文字） */
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stToolbar"] {
         background-color: white !important;
         color: black !important;
     }
 
-    /* 2. すべてのテキスト（ラベル、見出し、段落）を黒に固定 */
-    h1, h2, h3, p, span, label, .stMarkdown {
+    /* 2. すべてのテキスト要素を黒に強制 */
+    h1, h2, h3, p, span, label, li, .stMarkdown {
         color: black !important;
     }
 
-    /* 3. ボタン（設定保存、新規登録など）のスタイル */
-    /* 背景を白、文字を黒、枠線を黒に設定 */
-    div.stButton > button {
+    /* 3. ボタン全般（保存ボタン、通常ボタン、フォーム送信ボタンすべて） */
+    /* backgroundを白、文字を黒、枠線を黒に強制上書き */
+    button, 
+    div.stButton > button, 
+    div.stFormSubmitButton > button,
+    [data-testid="stBaseButton-primary"],
+    [data-testid="stBaseButton-secondary"] {
         background-color: white !important;
         color: black !important;
         border: 2px solid black !important;
-        border-radius: 5px !important;
-        width: 100%; /* スマホで見やすくするため幅一杯に */
-    }
-    
-    /* ボタンにマウスが乗ったときの色（少しグレーに） */
-    div.stButton > button:hover {
-        background-color: #f0f0f0 !important;
-        border-color: black !important;
+        border-radius: 8px !important;
+        height: auto !important;
+        padding: 10px 20px !important;
+        transition: 0.3s;
     }
 
-    /* 4. 入力エリア（四角い枠の中）のスタイル */
-    /* 入力待ちの状態や選択ボックスの中も白背景・黒文字に固定 */
-    div[data-baseweb="input"], div[data-baseweb="select"], div[data-baseweb="base-input"] {
+    /* ボタン内のテキスト（たまにスパンタグで色が固定されるため） */
+    button p, button span {
+        color: black !important;
+    }
+
+    /* ボタンに触れたとき（ホバー時）の色変化 */
+    button:hover, div.stButton > button:hover {
+        background-color: #eeeeee !important;
+        border-color: #333333 !important;
+    }
+
+    /* 4. 入力フォームの枠内（四角い部分）が黒くなるのを防ぐ */
+    div[data-baseweb="input"], 
+    div[data-baseweb="base-input"], 
+    div[data-baseweb="select"], 
+    textarea, 
+    input {
         background-color: white !important;
         color: black !important;
         border: 1px solid black !important;
+        -webkit-text-fill-color: black !important; /* iPhone Safari対策 */
     }
 
-    /* 入力中の文字色も黒に */
-    input {
-        color: black !important;
-        -webkit-text-fill-color: black !important; /* iPhone用 */
-    }
-
-    /* 5. スマホのダークモード設定を完全に無効化するための呪文 */
+    /* 5. ダークモード設定（スマホ側）が入り込まないようにする最終ガード */
     @media (prefers-color-scheme: dark) {
-        div.stButton > button {
+        button, div.stButton > button, .stFormSubmitButton button {
             background-color: white !important;
             color: black !important;
         }
-        input {
+        [data-testid="stAppViewContainer"] {
             background-color: white !important;
-            color: black !important;
         }
     }
     </style>
@@ -267,6 +275,7 @@ else:
         if not past_h.empty:
             st.success(f"💡 **コーチ**: {past_h.iloc[0].get('coach_comment', 'なし')}")
             st.info(f"📝 **メモ**: {past_h.iloc[0].get('free_text', 'なし')}")
+
 
 
 
