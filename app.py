@@ -65,9 +65,7 @@ st.title("🏀 バスケ練習管理システム")
 col_user, col_date = st.columns(2)
 
 with col_user:
-    user_list = []
-    if not profiles_df.empty and "user_id" in profiles_df.columns:
-        user_list = profiles_df["user_id"].dropna().unique().tolist()
+    user_list = profiles_df["user_id"].dropna().unique().tolist() if not profiles_df.empty else []
     selected_user = st.selectbox("👤 ユーザーを選択", options=["新規登録"] + user_list)
 
 with col_date:
@@ -77,23 +75,30 @@ with col_date:
 is_new = selected_user == "新規登録"
 u_prof = profiles_df[profiles_df["user_id"] == selected_user].iloc[0] if not is_new else pd.Series()
 
-# --- その日の既存記録の読み出し（引き継ぎ用） ---
+# --- 記録の有無を確認し、ステータスを表示 ---
 existing_history = pd.Series()
 existing_metrics = pd.DataFrame()
+record_found = False
 
 if not is_new:
-    # Historyから読み込み
     if not history_df.empty:
         h_match = history_df[(history_df["user_id"] == selected_user) & (history_df["date"] == target_date_str)]
         if not h_match.empty:
             existing_history = h_match.iloc[-1]
+            record_found = True
     
-    # Metricsから読み込み（ハンドリング等の数値）
     if not metrics_df.empty:
         existing_metrics = metrics_df[(metrics_df["user_id"] == selected_user) & (metrics_df["date"] == target_date_str)]
 
+# ステータス表示（結果が入っているかどうかの視認性を向上）
+if not is_new:
+    if record_found:
+        st.success(f"✅ {target_date_str} の記録が既に入力されています")
+    else:
+        st.info(f"ℹ️ {target_date_str} の記録はまだありません")
+
 # ==========================================
-# 4. ユーザー詳細設定
+# 4. ユーザー詳細設定（ロードマップの上に配置）
 # ==========================================
 with st.expander("⚙️ ユーザー詳細設定・項目カスタマイズ", expanded=is_new):
     u_id = st.text_input("ユーザーID", value=str(u_prof.get("user_id", "")) if pd.notna(u_prof.get("user_id")) else "")
@@ -109,7 +114,7 @@ with st.expander("⚙️ ユーザー詳細設定・項目カスタマイズ", e
                                 value=str(raw_metrics) if pd.notna(raw_metrics) else "シュート率,ハンドリング")
 
 # ==========================================
-# 5. ロードマップ & 今日のタスク表示
+# 5. ロードマップ & 今日のタスク表示（達成率を追加）
 # ==========================================
 done_tasks = [] 
 if not is_new:
@@ -125,15 +130,25 @@ if not is_new:
     else:
         try:
             tasks_list = json.loads(tasks_raw)
+            total_tasks = len(tasks_list)
+            
+            # タスク一覧とチェックボックス
             for i, task in enumerate(tasks_list):
                 if st.checkbox(task, key=f"task_{i}"):
                     done_tasks.append(task)
+            
+            # --- タスク達成率の表示 ---
+            if total_tasks > 0:
+                completion_rate = int((len(done_tasks) / total_tasks) * 100)
+                st.write(f"📊 **タスク達成率: {completion_rate}%**")
+                st.progress(completion_rate / 100)
+                
         except:
             st.error("⚠️ tasks_json の形式エラー")
     st.divider()
 
 # ==========================================
-# 6. 今日の記録入力（過去データの引き継ぎ対応）
+# 6. 今日の記録入力
 # ==========================================
 st.subheader(f"📝 {target_date_str} の振り返り")
 
@@ -143,19 +158,16 @@ default_note = str(existing_history.get("note", "")) if pd.notna(existing_histor
 rate = st.slider("自己評価 (rate)", 1, 5, default_rate)
 user_note = st.text_area("今日頑張ったこと (note)", value=default_note)
 
-# --- ここが修正ポイント：Metricsシートから数値を自動入力 ---
 metric_inputs = {}
 if metrics_str:
     for m_name in metrics_str.split(","):
         m_name = m_name.strip()
         if m_name:
-            # 過去のMetricsデータからこの項目の値を探す
             prev_val = 0.0
             if not existing_metrics.empty:
                 m_match = existing_metrics[existing_metrics["metric_name"] == m_name]
                 if not m_match.empty:
                     prev_val = float(m_match.iloc[-1]["value"])
-            
             metric_inputs[m_name] = st.number_input(f"{m_name} の結果", value=prev_val)
 
 # ==========================================
@@ -192,7 +204,6 @@ if st.button("設定と記録を保存する"):
                 new_m_list.append({"user_id": u_id, "date": target_date_str, "metric_name": name, "value": val})
             updated_metrics = pd.concat([m_df_clean, pd.DataFrame(new_m_list)], ignore_index=True)
 
-            # --- 保存実行 ---
             conn.update(worksheet="Profiles", data=updated_profiles)
             conn.update(worksheet="History", data=updated_history)
             conn.update(worksheet="Metrics", data=updated_metrics)
