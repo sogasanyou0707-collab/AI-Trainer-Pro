@@ -5,64 +5,60 @@ st.set_page_config(layout="wide")
 
 st.markdown("""
     <style>
-    /* 1. アプリ全体の基本色（白背景・黒文字） */
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"], [data-testid="stToolbar"] {
+    /* 1. アプリ全体の基本設定 */
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
         background-color: white !important;
         color: black !important;
     }
 
-    /* 2. すべてのテキスト要素を黒に強制 */
+    /* 2. テキスト全般を黒に */
     h1, h2, h3, p, span, label, li, .stMarkdown {
         color: black !important;
     }
 
-    /* 3. ボタン全般（保存ボタン、通常ボタン、フォーム送信ボタンすべて） */
-    /* backgroundを白、文字を黒、枠線を黒に強制上書き */
-    button, 
-    div.stButton > button, 
-    div.stFormSubmitButton > button,
-    [data-testid="stBaseButton-primary"],
-    [data-testid="stBaseButton-secondary"] {
+    /* 3. セレクトボックス（ユーザー選択、コーチ選択など）の対策 */
+    /* 選択枠自体の背景を白、文字を黒に */
+    div[data-baseweb="select"] > div {
+        background-color: white !important;
+        color: black !important;
+    }
+
+    /* 選択肢のリスト（開いた時のメニュー）を強制的に白背景・黒文字に */
+    ul[role="listbox"] {
+        background-color: white !important;
+    }
+    
+    li[role="option"] {
+        background-color: white !important;
+        color: black !important;
+    }
+
+    /* 選択された項目の文字色（iPhone/Android対策） */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
+        color: black !important;
+    }
+
+    /* 4. 削除項目などのマルチセレクト（複数選択）のタグ部分 */
+    span[data-baseweb="tag"] {
+        background-color: #eeeeee !important; /* タグの背景を薄いグレーに */
+        color: black !important;
+    }
+
+    /* 5. ボタン全般のスタイル固定 */
+    button, div.stButton > button, div.stFormSubmitButton > button {
         background-color: white !important;
         color: black !important;
         border: 2px solid black !important;
-        border-radius: 8px !important;
-        height: auto !important;
-        padding: 10px 20px !important;
-        transition: 0.3s;
     }
 
-    /* ボタン内のテキスト（たまにスパンタグで色が固定されるため） */
-    button p, button span {
-        color: black !important;
-    }
-
-    /* ボタンに触れたとき（ホバー時）の色変化 */
-    button:hover, div.stButton > button:hover {
-        background-color: #eeeeee !important;
-        border-color: #333333 !important;
-    }
-
-    /* 4. 入力フォームの枠内（四角い部分）が黒くなるのを防ぐ */
-    div[data-baseweb="input"], 
-    div[data-baseweb="base-input"], 
-    div[data-baseweb="select"], 
-    textarea, 
-    input {
-        background-color: white !important;
-        color: black !important;
-        border: 1px solid black !important;
-        -webkit-text-fill-color: black !important; /* iPhone Safari対策 */
-    }
-
-    /* 5. ダークモード設定（スマホ側）が入り込まないようにする最終ガード */
+    /* 6. スマホのダークモードが入り込まないための最終防衛 */
     @media (prefers-color-scheme: dark) {
-        button, div.stButton > button, .stFormSubmitButton button {
+        div[data-baseweb="select"] > div, ul[role="listbox"], li[role="option"] {
             background-color: white !important;
             color: black !important;
         }
-        [data-testid="stAppViewContainer"] {
-            background-color: white !important;
+        span {
+            color: black !important;
         }
     }
     </style>
@@ -275,6 +271,7 @@ else:
         if not past_h.empty:
             st.success(f"💡 **コーチ**: {past_h.iloc[0].get('coach_comment', 'なし')}")
             st.info(f"📝 **メモ**: {past_h.iloc[0].get('free_text', 'なし')}")
+
 
 
 
