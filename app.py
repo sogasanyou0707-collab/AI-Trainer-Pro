@@ -1,149 +1,175 @@
 import streamlit as st
-import os
+from streamlit_gsheets import GSheetsConnection
+import pandas as pd
 import json
 import requests
-import gspread
-from google.oauth2.service_account import Credentials
 import google.generativeai as genai
 from datetime import datetime
+import os
 
-# --- 1. 設定管理 ---
+# ==========================================
+# 1. ページ設定 & デザイン (モバイル対応CSS)
+# ==========================================
+st.set_page_config(page_title="AI Trainer バスケ管理", layout="centered")
+
+st.markdown("""
+    <style>
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+        background-color: white !important;
+        color: black !important;
+    }
+    h1, h2, h3, p, span, label, li, .stMarkdown {
+        color: black !important;
+    }
+    button, div.stButton > button {
+        background-color: white !important;
+        color: black !important;
+        border: 2px solid black !important;
+        border-radius: 8px !important;
+        font-weight: bold !important;
+    }
+    input, textarea, div[data-baseweb="input"], div[data-baseweb="select"] > div {
+        background-color: white !important;
+        color: black !important;
+        border: 1px solid black !important;
+    }
+    .stProgress > div > div > div > div { background-color: black !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ==========================================
+# 2. 定数 & キャッシュ管理
+# ==========================================
 CONFIG_FILE = "app_settings.json"
-SHEET_NAME = "Profiles"
 
-def load_cache():
+def load_local_config():
     if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: pass
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
     return {"selected_model": "gemini-3-pro"}
 
-def save_cache(settings):
+def save_local_config(config):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=4, ensure_ascii=False)
+        json.dump(config, f, indent=4, ensure_ascii=False)
 
-# --- 2. スプレッドシートからの自動同期ロジック ---
-def auto_sync_from_sheets():
-    """起動時に自動でA2, B2, E2, F2を取得する"""
-    try:
-        creds_info = st.secrets["connections"]["gsheets"]
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        client = gspread.authorize(creds)
-        sh = client.open_by_url(creds_info["spreadsheet"])
-        sheet = sh.worksheet(SHEET_NAME)
-        
-        # 情報を一括取得してセッションに格納
-        data = {
-            "user_name": sheet.acell('A2').value,
-            "user_role": sheet.acell('B2').value,
-            "line_token": sheet.acell('E2').value,
-            "line_user_id": sheet.acell('F2').value
-        }
-        return data
-    except Exception as e:
-        st.error(f"自動同期に失敗しました。Secretsを確認してください: {e}")
-        return None
+# ==========================================
+# 3. 外部データ・AIロジック
+# ==========================================
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 3. AIロジック ---
 def get_latest_models():
-    """1.5系を除外した最新モデルを動的に取得"""
+    """Gemini APIから最新モデルを取得（1.5系除外）"""
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         return [m.name.replace('models/', '') for m in genai.list_models() 
                 if 'generateContent' in m.supported_generation_methods and "1.5" not in m.name]
-    except:
-        return ["gemini-3-pro"]
+    except: return ["gemini-3-pro"]
 
-def ai_coach_advice(content, model_name, role):
-    """報告内容に基づきAIがコーチングとタスクを提案"""
+def ai_coach_feedback(report, model_name, goal):
+    """AIによるコーチング提案"""
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         model = genai.GenerativeModel(model_name)
-        prompt = f"""
-        あなたは{role}の専門コーチです。以下の業務報告に基づき、フィードバックと明日へのタスク提案を行ってください。
-        1. 業務への専門的フィードバック
-        2. 明日優先すべき具体的なタスク3選
-        
-        内容: {content}
-        """
+        prompt = f"あなたはバスケットボールの専門コーチです。目標「{goal}」を持つ選手に対し、以下の練習報告へのフィードバックと明日やるべきタスクを3つ提案してください。\n\n報告:\n{report}"
         return model.generate_content(prompt).text
-    except Exception as e:
-        return f"AIコーチング失敗: {e}"
+    except Exception as e: return f"AIコーチエラー: {e}"
 
-# --- 4. UI 構築 (シンプル＆高速) ---
-st.set_page_config(page_title="AI Trainer Pro", layout="centered")
+# ==========================================
+# 4. データ読み込み & ユーザー選択
+# ==========================================
+profiles_df = conn.read(worksheet="Profiles", ttl=0)
+history_df = conn.read(worksheet="History", ttl=0)
+metrics_df = conn.read(worksheet="Metrics", ttl=0)
 
-# A. 自動同期（初回およびリロード時）
-if 'user_info' not in st.session_state:
-    with st.spinner("スプレッドシートから最新情報を同期中..."):
-        info = auto_sync_from_sheets()
-        if info:
-            st.session_state.user_info = info
-            st.session_state.cache = load_cache()
-            st.session_state.cache.update(info) # キャッシュも更新
+st.title("🏀 AI Trainer Pro")
 
-user = st.session_state.user_info
-cache = st.session_state.cache
+# ユーザー・日付選択
+col_u, col_d = st.columns(2)
+with col_u:
+    user_list = profiles_df["user_id"].dropna().unique().tolist() if not profiles_df.empty else []
+    selected_user = st.selectbox("👤 ユーザー", options=user_list)
+with col_d:
+    selected_date = st.date_input("📅 日付", value=datetime.now())
+    date_str = selected_date.strftime("%Y-%m-%d")
 
-# タイトル
-st.title("AI Trainer 業務報告")
+# ユーザー情報の特定
+u_prof = profiles_df[profiles_df["user_id"] == selected_user].iloc[0]
 
-# ユーザー情報表示
-st.info(f"👤 **{user['user_name']}** | 🏷️ **{user['user_role']}**")
+# ==========================================
+# 5. ユーザー詳細 (自動同期)
+# ==========================================
+with st.expander("⚙️ ユーザープロフィール・設定", expanded=False):
+    st.write(f"**目標:** {u_prof.get('goal', '未設定')}")
+    st.write(f"**担当コーチ:** {u_prof.get('coach_name', '未設定')}")
+    metrics_str = st.text_input("計測項目 (カンマ区切り)", value=u_prof.get("tracked_metrics", "シュート率"))
 
-# カレンダー
-selected_date = st.date_input("報告日", datetime.now())
+# ==========================================
+# 6. 今日のタスク & 練習記録
+# ==========================================
+st.subheader("📋 今日の練習タスク")
+tasks_json = u_prof.get("tasks_json", "[]")
+done_tasks = []
+try:
+    tasks_list = json.loads(tasks_json)
+    for i, t in enumerate(tasks_list):
+        if st.checkbox(t, key=f"t_{i}"):
+            done_tasks.append(t)
+    if tasks_list:
+        rate = len(done_tasks)/len(tasks_list)
+        st.progress(rate)
+        st.write(f"達成率: {int(rate*100)}%")
+except: st.write("タスク形式エラー")
 
-st.write("---")
+st.divider()
 
-# 報告入力
-report_text = st.text_area("本日の報告内容", placeholder="解析結果や実施事項を入力...", height=250)
+st.subheader("📝 練習の振り返り")
+user_rate = st.slider("自己評価", 1, 5, 3)
+user_note = st.text_area("今日の内容・気づき", height=150)
 
-# アクションボタン
-col1, col2 = st.columns(2)
+# 動的メトリクス入力
+metric_vals = {}
+for m in metrics_str.split(","):
+    m = m.strip()
+    if m: metric_vals[m] = st.number_input(f"{m} の結果", value=0.0)
 
-with col1:
-    if st.button("🚀 LINEで報告を送信", use_container_width=True):
-        if user["line_token"] and user["line_user_id"]:
-            msg = f"【{selected_date} 報告】\n担当: {user['user_name']}\n---\n{report_text}"
-            headers = {"Authorization": f"Bearer {user['line_token']}", "Content-Type": "application/json"}
-            data = {"to": user["line_user_id"], "messages": [{"type": "text", "text": msg}]}
-            if requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=data).status_code == 200:
-                st.success("LINE送信完了")
-            else: st.error("送信失敗")
-        else: st.warning("LINE情報がスプレッドシートにありません")
+# ==========================================
+# 7. アクションボタン (LINE送信 & AIコーチ)
+# ==========================================
+local_cfg = load_local_config()
 
-with col2:
-    if st.button("💡 AIコーチのタスク提案", use_container_width=True):
-        if report_text:
-            with st.spinner("AIが思考中..."):
-                advice = ai_coach_advice(report_text, cache['selected_model'], user['user_role'])
-                st.session_state.advice = advice
-        else: st.warning("内容を入力してください")
-
-# AI提案の表示
-if 'advice' in st.session_state:
-    st.write("---")
-    st.subheader("🤖 AIコーチからのアドバイス")
-    st.markdown(st.session_state.advice)
-
-# --- 5. サイドバー (設定はここへ集約) ---
-with st.sidebar:
-    st.header("⚙️ 設定")
-    with st.expander("詳細設定"):
-        models = get_latest_models()
-        sel = st.selectbox("AIモデル選択", models, index=0)
-        cache["selected_model"] = sel
-        
-        if st.button("設定を強制保存"):
-            save_cache(cache)
-            st.toast("保存完了")
+if st.button("🚀 記録を保存してLINE報告", use_container_width=True):
+    # LINE送信ロジック (E列, F列の値を使用)
+    line_token = u_prof.get("line_token") # ProfilesシートのE列想定
+    line_id = u_prof.get("line_user_id")   # ProfilesシートのF列想定
     
-    st.write("---")
-    if st.button("🔄 情報を再同期"):
-        st.session_state.pop('user_info')
+    if line_token and line_id:
+        msg = f"【バスケ報告】{date_str}\n評価: {user_rate}\n内容: {user_note}\n完了: {', '.join(done_tasks)}"
+        headers = {"Authorization": f"Bearer {line_token}", "Content-Type": "application/json"}
+        payload = {"to": line_id, "messages": [{"type": "text", "text": msg}]}
+        requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
+        st.success("LINE送信 & 保存完了！")
+    else:
+        st.warning("LINE情報がProfilesシートに見つかりません。")
+
+if st.button("💡 AIコーチに相談する", use_container_width=True):
+    with st.spinner("AIコーチが思考中..."):
+        advice = ai_coach_feedback(user_note, local_cfg["selected_model"], u_prof.get("goal"))
+        st.markdown("### 🤖 AIコーチのアドバイス")
+        st.info(advice)
+
+# ==========================================
+# 8. サイドバー (モデル選択)
+# ==========================================
+with st.sidebar:
+    st.header("⚙️ System")
+    models = get_latest_models()
+    selected_m = st.selectbox("AIモデル選択", models, index=0)
+    if selected_m != local_cfg["selected_model"]:
+        local_cfg["selected_model"] = selected_m
+        save_local_config(local_cfg)
+        st.toast("モデル設定を更新しました")
+    
+    if st.button("🔄 シートを再読込"):
         st.rerun()
 
-st.caption(f"Status: {cache['selected_model']} 稼働中")
+st.caption(f"Status: {local_cfg['selected_model']} Active")
