@@ -1,21 +1,35 @@
 import streamlit as st
 
-# 強制的に文字色と背景色を指定するCSS
+st.set_page_config(layout="wide") # ページ設定を最初に入れるのが推奨
+
 st.markdown("""
     <style>
-    /* 全体の背景色と文字色 */
-    .stApp {
-        background-color: #FFFFFF;
-        color: #262730;
-    }
-    /* 入力ラベル（シュート率やハンドリングなど）の文字色 */
-    .stWidgetLabel p {
+    /* 1. アプリ全体の背景を白、文字を黒に強制 */
+    html, body, [data-testid="stAppViewContainer"] {
+        background-color: white !important;
         color: #262730 !important;
     }
-    /* ボタンの文字が見えない場合の対策 */
+
+    /* 2. 入力項目（ハンドリング等）のラベルを強制的に黒に */
+    label, .stMarkdown p, .stText p {
+        color: #262730 !important;
+    }
+
+    /* 3. ボタンの文字を白、背景を緑（またはお好みの色）に固定 */
     div.stButton > button {
-        background-color: #4CAF50; /* ボタンの背景色（例：緑） */
-        color: white !important;    /* ボタンの文字色 */
+        background-color: #4CAF50 !important;
+        color: white !important;
+        border: none !important;
+    }
+
+    /* 4. スマホのダークモード設定を無視させるための指定 */
+    @media (prefers-color-scheme: dark) {
+        [data-testid="stAppViewContainer"] {
+            background-color: white !important;
+        }
+        label, .stMarkdown p, .stText p {
+            color: #262730 !important;
+        }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -227,4 +241,5 @@ else:
         if not past_h.empty:
             st.success(f"💡 **コーチ**: {past_h.iloc[0].get('coach_comment', 'なし')}")
             st.info(f"📝 **メモ**: {past_h.iloc[0].get('free_text', 'なし')}")
+
 
