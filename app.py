@@ -71,28 +71,35 @@ with col_user:
     selected_user = st.selectbox("👤 ユーザーを選択", options=["新規登録"] + user_list)
 
 with col_date:
-    # カレンダー機能の復活
     selected_date = st.date_input("📅 記録日を選択", value=datetime.now())
     target_date_str = selected_date.strftime("%Y-%m-%d")
 
 is_new = selected_user == "新規登録"
 u_prof = profiles_df[profiles_df["user_id"] == selected_user].iloc[0] if not is_new else pd.Series()
 
-# その日の既存記録があるか確認（引き継ぎ用）
+# --- その日の既存記録の読み出し（引き継ぎ用） ---
 existing_history = pd.Series()
-if not is_new and not history_df.empty:
-    match = history_df[(history_df["user_id"] == selected_user) & (history_df["date"] == target_date_str)]
-    if not match.empty:
-        existing_history = match.iloc[-1]
+existing_metrics = pd.DataFrame()
+
+if not is_new:
+    # Historyから読み込み
+    if not history_df.empty:
+        h_match = history_df[(history_df["user_id"] == selected_user) & (history_df["date"] == target_date_str)]
+        if not h_match.empty:
+            existing_history = h_match.iloc[-1]
+    
+    # Metricsから読み込み（ハンドリング等の数値）
+    if not metrics_df.empty:
+        existing_metrics = metrics_df[(metrics_df["user_id"] == selected_user) & (metrics_df["date"] == target_date_str)]
 
 # ==========================================
-# 4. ユーザー詳細設定（ロードマップの上に配置）
+# 4. ユーザー詳細設定
 # ==========================================
 with st.expander("⚙️ ユーザー詳細設定・項目カスタマイズ", expanded=is_new):
     u_id = st.text_input("ユーザーID", value=str(u_prof.get("user_id", "")) if pd.notna(u_prof.get("user_id")) else "")
-    c_height, c_weight = st.columns(2)
-    h_val = c_height.number_input("身長 (cm)", value=float(u_prof.get("height", 0.0)) if pd.notna(u_prof.get("height")) else 0.0)
-    w_val = c_weight.number_input("体重 (kg)", value=float(u_prof.get("weight", 0.0)) if pd.notna(u_prof.get("weight")) else 0.0)
+    c_h, c_w = st.columns(2)
+    h_val = c_h.number_input("身長 (cm)", value=float(u_prof.get("height", 0.0)) if pd.notna(u_prof.get("height")) else 0.0)
+    w_val = c_w.number_input("体重 (kg)", value=float(u_prof.get("weight", 0.0)) if pd.notna(u_prof.get("weight")) else 0.0)
     
     goal_val = st.text_area("現在の目標", value=str(u_prof.get("goal", "")) if pd.notna(u_prof.get("goal")) else "")
     coach_val = st.text_input("担当コーチ", value=str(u_prof.get("coach_name", "")) if pd.notna(u_prof.get("coach_name")) else "")
@@ -105,17 +112,14 @@ with st.expander("⚙️ ユーザー詳細設定・項目カスタマイズ", e
 # 5. ロードマップ & 今日のタスク表示
 # ==========================================
 done_tasks = [] 
-
 if not is_new:
     st.divider()
     st.subheader("🏁 成長ロードマップ")
     raw_roadmap = u_prof.get("roadmap")
-    roadmap_text = raw_roadmap if pd.notna(raw_roadmap) and raw_roadmap != "" else "ロードマップが設定されていません。"
-    st.info(roadmap_text)
+    st.info(raw_roadmap if pd.notna(raw_roadmap) and raw_roadmap != "" else "ロードマップが設定されていません。")
 
     st.subheader("📋 今日の練習タスク")
     tasks_raw = u_prof.get("tasks_json")
-    
     if pd.isna(tasks_raw) or tasks_raw == "" or tasks_raw == "[]":
         st.write("今日のタスクは設定されていません。")
     else:
@@ -129,23 +133,30 @@ if not is_new:
     st.divider()
 
 # ==========================================
-# 6. 今日の記録入力
+# 6. 今日の記録入力（過去データの引き継ぎ対応）
 # ==========================================
 st.subheader(f"📝 {target_date_str} の振り返り")
 
-# 過去の記録があればそれを初期値にする
 default_rate = int(existing_history.get("rate", 3)) if pd.notna(existing_history.get("rate")) else 3
 default_note = str(existing_history.get("note", "")) if pd.notna(existing_history.get("note")) else ""
 
 rate = st.slider("自己評価 (rate)", 1, 5, default_rate)
 user_note = st.text_area("今日頑張ったこと (note)", value=default_note)
 
+# --- ここが修正ポイント：Metricsシートから数値を自動入力 ---
 metric_inputs = {}
 if metrics_str:
     for m_name in metrics_str.split(","):
         m_name = m_name.strip()
         if m_name:
-            metric_inputs[m_name] = st.number_input(f"{m_name} の結果", value=0.0)
+            # 過去のMetricsデータからこの項目の値を探す
+            prev_val = 0.0
+            if not existing_metrics.empty:
+                m_match = existing_metrics[existing_metrics["metric_name"] == m_name]
+                if not m_match.empty:
+                    prev_val = float(m_match.iloc[-1]["value"])
+            
+            metric_inputs[m_name] = st.number_input(f"{m_name} の結果", value=prev_val)
 
 # ==========================================
 # 7. 保存ロジック
@@ -155,40 +166,38 @@ if st.button("設定と記録を保存する"):
         st.error("ユーザーIDを入力してください。")
     else:
         try:
-            # A. Profilesの更新
-            new_profile_data = {
+            # A. Profiles更新
+            new_profile = {
                 "user_id": u_id, "height": h_val, "weight": w_val, "goal": goal_val,
                 "coach_name": coach_val, "tracked_metrics": metrics_str,
                 "roadmap": u_prof.get("roadmap") if not is_new else "",
                 "tasks_json": u_prof.get("tasks_json") if not is_new else "[]"
             }
             p_df_clean = profiles_df[profiles_df["user_id"] != u_id] if not profiles_df.empty else pd.DataFrame()
-            updated_profiles = pd.concat([p_df_clean, pd.DataFrame([new_profile_data])], ignore_index=True)
+            updated_profiles = pd.concat([p_df_clean, pd.DataFrame([new_profile])], ignore_index=True)
 
-            # B. Historyへの追加
+            # B. History追加
             tasks_summary = "\n[完了タスク]: " + ", ".join(done_tasks) if done_tasks else ""
             full_note = user_note + tasks_summary
-            
-            # 同一日のデータがあれば削除して上書き
             h_df_clean = history_df[~((history_df["user_id"] == u_id) & (history_df["date"] == target_date_str))]
             new_history = pd.DataFrame([{
                 "user_id": u_id, "date": target_date_str, "rate": rate, "note": full_note, "coach_comment": ""
             }])
             updated_history = pd.concat([h_df_clean, new_history], ignore_index=True)
 
-            # C. Metricsへの追加
+            # C. Metrics追加
             m_df_clean = metrics_df[~((metrics_df["user_id"] == u_id) & (metrics_df["date"] == target_date_str))]
-            new_metrics_list = []
+            new_m_list = []
             for name, val in metric_inputs.items():
-                new_metrics_list.append({"user_id": u_id, "date": target_date_str, "metric_name": name, "value": val})
-            updated_metrics = pd.concat([m_df_clean, pd.DataFrame(new_metrics_list)], ignore_index=True)
+                new_m_list.append({"user_id": u_id, "date": target_date_str, "metric_name": name, "value": val})
+            updated_metrics = pd.concat([m_df_clean, pd.DataFrame(new_m_list)], ignore_index=True)
 
             # --- 保存実行 ---
             conn.update(worksheet="Profiles", data=updated_profiles)
             conn.update(worksheet="History", data=updated_history)
             conn.update(worksheet="Metrics", data=updated_metrics)
             
-            st.success(f"{target_date_str} のデータを保存しました！")
+            st.success(f"保存完了！")
             st.balloons()
             
         except Exception as e:
