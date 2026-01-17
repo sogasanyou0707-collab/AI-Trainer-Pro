@@ -1,34 +1,60 @@
 import streamlit as st
 
-st.set_page_config(layout="wide") # ページ設定を最初に入れるのが推奨
+# ページ設定（既にある場合はそのままでOK）
+st.set_page_config(layout="wide")
 
 st.markdown("""
     <style>
-    /* 1. アプリ全体の背景を白、文字を黒に強制 */
-    html, body, [data-testid="stAppViewContainer"] {
+    /* 1. アプリ全体の背景と文字色の基本設定 */
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
         background-color: white !important;
-        color: #262730 !important;
+        color: black !important;
     }
 
-    /* 2. 入力項目（ハンドリング等）のラベルを強制的に黒に */
-    label, .stMarkdown p, .stText p {
-        color: #262730 !important;
+    /* 2. すべてのテキスト（ラベル、見出し、段落）を黒に固定 */
+    h1, h2, h3, p, span, label, .stMarkdown {
+        color: black !important;
     }
 
-    /* 3. ボタンの文字を白、背景を緑（またはお好みの色）に固定 */
+    /* 3. ボタン（設定保存、新規登録など）のスタイル */
+    /* 背景を白、文字を黒、枠線を黒に設定 */
     div.stButton > button {
-        background-color: #4CAF50 !important;
-        color: white !important;
-        border: none !important;
+        background-color: white !important;
+        color: black !important;
+        border: 2px solid black !important;
+        border-radius: 5px !important;
+        width: 100%; /* スマホで見やすくするため幅一杯に */
+    }
+    
+    /* ボタンにマウスが乗ったときの色（少しグレーに） */
+    div.stButton > button:hover {
+        background-color: #f0f0f0 !important;
+        border-color: black !important;
     }
 
-    /* 4. スマホのダークモード設定を無視させるための指定 */
+    /* 4. 入力エリア（四角い枠の中）のスタイル */
+    /* 入力待ちの状態や選択ボックスの中も白背景・黒文字に固定 */
+    div[data-baseweb="input"], div[data-baseweb="select"], div[data-baseweb="base-input"] {
+        background-color: white !important;
+        color: black !important;
+        border: 1px solid black !important;
+    }
+
+    /* 入力中の文字色も黒に */
+    input {
+        color: black !important;
+        -webkit-text-fill-color: black !important; /* iPhone用 */
+    }
+
+    /* 5. スマホのダークモード設定を完全に無効化するための呪文 */
     @media (prefers-color-scheme: dark) {
-        [data-testid="stAppViewContainer"] {
+        div.stButton > button {
             background-color: white !important;
+            color: black !important;
         }
-        label, .stMarkdown p, .stText p {
-            color: #262730 !important;
+        input {
+            background-color: white !important;
+            color: black !important;
         }
     }
     </style>
@@ -241,5 +267,6 @@ else:
         if not past_h.empty:
             st.success(f"💡 **コーチ**: {past_h.iloc[0].get('coach_comment', 'なし')}")
             st.info(f"📝 **メモ**: {past_h.iloc[0].get('free_text', 'なし')}")
+
 
 
