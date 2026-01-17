@@ -1,278 +1,104 @@
 import streamlit as st
-
-# ページ設定
-st.set_page_config(layout="wide")
-
-st.markdown("""
-    <style>
-    /* 1. アプリ全体の基本設定 */
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-        background-color: white !important;
-        color: black !important;
-    }
-
-    /* 2. テキスト全般を黒に */
-    h1, h2, h3, p, span, label, li, .stMarkdown {
-        color: black !important;
-    }
-
-    /* 3. セレクトボックス（ユーザー選択、コーチ選択など）の対策 */
-    /* 選択枠自体の背景を白、文字を黒に */
-    div[data-baseweb="select"] > div {
-        background-color: white !important;
-        color: black !important;
-    }
-
-    /* 選択肢のリスト（開いた時のメニュー）を強制的に白背景・黒文字に */
-    ul[role="listbox"] {
-        background-color: white !important;
-    }
-    
-    li[role="option"] {
-        background-color: white !important;
-        color: black !important;
-    }
-
-    /* 選択された項目の文字色（iPhone/Android対策） */
-    div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
-        color: black !important;
-    }
-
-    /* 4. 削除項目などのマルチセレクト（複数選択）のタグ部分 */
-    span[data-baseweb="tag"] {
-        background-color: #eeeeee !important; /* タグの背景を薄いグレーに */
-        color: black !important;
-    }
-
-    /* 5. ボタン全般のスタイル固定 */
-    button, div.stButton > button, div.stFormSubmitButton > button {
-        background-color: white !important;
-        color: black !important;
-        border: 2px solid black !important;
-    }
-
-    /* 6. スマホのダークモードが入り込まないための最終防衛 */
-    @media (prefers-color-scheme: dark) {
-        div[data-baseweb="select"] > div, ul[role="listbox"], li[role="option"] {
-            background-color: white !important;
-            color: black !important;
-        }
-        span {
-            color: black !important;
-        }
-    }
-    </style>
-    """, unsafe_allow_html=True)
-import pandas as pd
-import datetime
-import time
-import google.generativeai as genai
 from streamlit_gsheets import GSheetsConnection
+import pandas as pd
+from datetime import datetime
 
-# --- 0. モバイル視認性・完全固定CSS ---
-st.set_page_config(page_title="Coach App", layout="centered")
-
-# AI設定
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-1.5-flash')
-
+# --- [Phase 1] モバイル表示対策CSS ---
 st.markdown("""
     <style>
-    /* 全体の背景をあえて少し明るいグレーに固定し、文字を黒にする */
-    .stApp { background-color: #f0f2f6; color: #111111; }
-    
-    /* ステータスカード：白背景に黒文字で固定 */
-    .status-box { 
-        background-color: #ffffff !important; 
-        color: #111111 !important; 
-        padding: 12px; 
-        border-radius: 10px; 
-        border-left: 5px solid #ff4b4b; 
-        margin-bottom: 10px;
-        box-shadow: 0px 2px 4px rgba(0,0,0,0.1);
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { background-color: white !important; color: black !important; }
+    h1, h2, h3, p, span, label, .stMarkdown { color: black !important; }
+    button, div.stButton > button, div.stFormSubmitButton > button { 
+        background-color: white !important; color: black !important; border: 2px solid black !important; border-radius: 8px !important; 
     }
-    .status-box b, .status-box small { color: #111111 !important; }
-    
-    /* チェックボックス：白背景に黒文字 */
-    div[data-testid="stCheckbox"] {
-        background-color: #ffffff !important;
-        border: 1px solid #dddddd !important;
-        padding: 8px 12px !important;
-        border-radius: 8px !important;
-        margin-bottom: 8px !important;
+    div[data-baseweb="select"] > div, ul[role="listbox"], li[role="option"] { background-color: white !important; color: black !important; }
+    input, textarea { 
+        background-color: white !important; color: black !important; border: 1px solid black !important; -webkit-text-fill-color: black !important; 
     }
-    div[data-testid="stCheckbox"] label p {
-        color: #111111 !important;
-        font-weight: bold !important;
-    }
-
-    /* カレンダーボタン：背景を白、文字を黒に固定 */
-    div[data-testid="stHorizontalBlock"] button {
-        background-color: #ffffff !important;
-        color: #111111 !important;
-        border: 1px solid #cccccc !important;
-    }
-    /* 選択中のボタンだけ赤枠にする */
-    div[data-testid="stHorizontalBlock"] button[kind="primary"] {
-        border: 2px solid #ff4b4b !important;
-        background-color: #fff0f0 !important;
-    }
-
-    /* 横スクロール設定 */
-    div[data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; overflow-x: auto !important; gap: 8px !important; padding: 10px 0; }
-    div[data-testid="stHorizontalBlock"] > div { min-width: 65px !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 1. データ読み込み ---
+# --- [Phase 2] データ連携ロジック ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-@st.cache_data(ttl=5)
-def load_all_data():
+def get_all_data():
+    """全シートのデータを読み込む関数"""
     try:
-        p = conn.read(worksheet="Profiles")
-        m = conn.read(worksheet="Metrics")
-        h = conn.read(worksheet="History")
-        p.columns = [c.strip().lower() for c in p.columns]
-        m.columns = [c.strip().lower() for c in m.columns]
-        h.columns = [c.strip().lower() for c in h.columns]
-        if 'date' in m.columns: m['date'] = pd.to_datetime(m['date']).dt.date
-        if 'date' in h.columns: h['date'] = pd.to_datetime(h['date']).dt.date
-        return p, m, h
-    except: return None, None, None
+        p = conn.read(worksheet="Profiles", ttl=0)
+        s = conn.read(worksheet="Settings", ttl=0)
+        h = conn.read(worksheet="History", ttl=0)
+        m = conn.read(worksheet="Metrics", ttl=0)
+        return p, s, h, m
+    except Exception as e:
+        st.error(f"シートの読み込みに失敗しました: {e}")
+        return [pd.DataFrame()] * 4
 
-profiles_df, metrics_df, history_df = load_all_data()
-if profiles_df is None: st.stop()
+profiles_df, settings_df, history_df, metrics_df = get_all_data()
 
-# --- 2. ユーザー管理 ＆ 設定（機能復活） ---
-st.title("🏀 AI Basketball Coach")
+st.title("🏀 バスケットボール練習管理システム")
 
-user_list = profiles_df['user_id'].unique().tolist()
-selected_user = st.selectbox("👤 ユーザーを選択", user_list)
-user_idx = profiles_df[profiles_df['user_id'] == selected_user].index[0]
-user_info = profiles_df.loc[user_idx]
+# 1. ユーザー選択・新規登録
+user_list = profiles_df["user_id"].unique().tolist() if not profiles_df.empty else []
+selected_user = st.selectbox("👤 ユーザーを選択", options=["新規登録"] + user_list)
 
-with st.expander("⚙️ 設定・新規登録・項目カスタマイズ"):
-    tab1, tab2 = st.tabs(["プロフィールと項目設定", "新規ユーザー登録"])
+# 選択されたユーザーの情報を抽出
+is_new = selected_user == "新規登録"
+u_prof = profiles_df[profiles_df["user_id"] == selected_user].iloc[0] if not is_new else pd.Series()
+
+# --- 2. プロフィールとカスタマイズ項目（Profiles / Settings） ---
+with st.expander("🛠️ ユーザー設定・項目カスタマイズ", expanded=is_new):
+    u_id = st.text_input("ユーザーID", value=u_prof.get("user_id", ""))
+    col1, col2 = st.columns(2)
+    height = col1.number_input("身長 (cm)", value=float(u_prof.get("height", 0.0)))
+    weight = col2.number_input("体重 (kg)", value=float(u_prof.get("weight", 0.0)))
     
-    with tab1:
-        with st.form("edit_profile"):
-            new_coach = st.selectbox("コーチを選択", ["安西コーチ", "熱血コーチ", "冷静コーチ"], 
-                                     index=["安西コーチ", "熱血コーチ", "冷静コーチ"].index(user_info.get('coach_name', '安西コーチ')))
-            new_goal = st.text_input("目標を更新", value=user_info.get('goal', ''))
-            
-            # 数値項目の管理
-            cur_metrics = user_info.get('tracked_metrics', "ハンドリング")
-            if pd.isna(cur_metrics): cur_metrics = "ハンドリング"
-            metric_list = [m.strip() for m in cur_metrics.split(",") if m.strip()]
-            
-            st.write("---")
-            st.write("📊 **記録する項目の整理**")
-            to_remove = st.multiselect("削除したい項目を選択", metric_list)
-            to_add = st.text_input("新しく追加したい項目（例：シュート率）")
-            
-            if st.form_submit_button("設定を反映して保存"):
-                final_metrics = [m for m in metric_list if m not in to_remove]
-                if to_add: final_metrics.append(to_add)
-                profiles_df.at[user_idx, 'coach_name'] = new_coach
-                profiles_df.at[user_idx, 'goal'] = new_goal
-                profiles_df.at[user_idx, 'tracked_metrics'] = ",".join(final_metrics)
-                conn.update(worksheet="Profiles", data=profiles_df)
-                st.cache_data.clear(); st.success("設定を更新しました！"); time.sleep(1); st.rerun()
-
-    with tab2:
-        with st.form("new_user"):
-            new_id = st.text_input("新規ユーザーID（英数字）")
-            new_g = st.text_input("目標")
-            if st.form_submit_button("新規ユーザーを作成"):
-                if new_id and new_id not in user_list:
-                    new_u = pd.DataFrame([{"user_id": new_id, "goal": new_g, "coach_name": "安西コーチ", "tracked_metrics": "ハンドリング"}])
-                    conn.update(worksheet="Profiles", data=pd.concat([profiles_df, new_u]))
-                    st.cache_data.clear(); st.success("作成しました"); time.sleep(1); st.rerun()
-
-# ステータス表示
-c1, c2 = st.columns(2)
-with c1: st.markdown(f'<div class="status-box"><small>コーチ</small><br><b>{user_info.get("coach_name", "安西")}</b></div>', unsafe_allow_html=True)
-with c2: st.markdown(f'<div class="status-box"><small>目標</small><br><b>{user_info.get("goal", "未設定")}</b></div>', unsafe_allow_html=True)
-
-# --- 3. カレンダー ---
-st.divider()
-today = datetime.date.today()
-date_range = [(today - datetime.timedelta(days=i)) for i in range(13, -1, -1)]
-if "selected_date" not in st.session_state: st.session_state.selected_date = today
-
-cols = st.columns(14)
-for i, d in enumerate(date_range):
-    day_m = metrics_df[(metrics_df['user_id'] == selected_user) & (metrics_df['date'] == d)]
-    achieve = day_m[day_m['metric_name'] == '達成度']
-    val = achieve.iloc[0]['value'] if not achieve.empty else 0
-    icon = "🔥" if val >= 100 else ("🟡" if val > 0 else "⚪")
-    if cols[i].button(f"{d.strftime('%a')}\n{icon}\n{d.day}", key=f"d_{i}", type="primary" if st.session_state.selected_date == d else "secondary"):
-        st.session_state.selected_date = d; st.rerun()
-
-# --- 4. 本日のメニュー ＆ 記録 ---
-if st.session_state.selected_date == today:
-    st.subheader("🗓️ 今日のタスク (AI提案)")
-    if "daily_tasks" not in st.session_state or st.session_state.get("task_user") != selected_user:
-        with st.spinner("AIがメニューを作成中..."):
-            prompt = f"バスケコーチとして目標「{user_info['goal']}」に向けた今日のタスクを4つ厳選。各15文字以内の箇条書き(- 項目名)のみ。"
-            try:
-                res = model.generate_content(prompt)
-                st.session_state.daily_tasks = [t.strip("- ").strip() for t in res.text.split("\n") if t][:4]
-            except: st.session_state.daily_tasks = ["ハンドリング", "フリースロー", "体幹", "動画確認"]
-            st.session_state.task_user = selected_user
-
-    checks = []
-    for i, t in enumerate(st.session_state.daily_tasks):
-        checks.append(st.checkbox(t, key=f"t_{i}"))
+    goal = st.text_area("現在の目標 (goal)", value=u_prof.get("goal", ""))
+    coach = st.text_input("担当コーチ (coach_name)", value=u_prof.get("coach_name", ""))
     
-    achievement = int((sum(checks) / 4) * 100)
-    st.progress(achievement / 100)
+    # 記録する項目の整理（tracked_metricsはカンマ区切りで保存されている想定）
+    metrics_str = st.text_input("計測項目（カンマ区切り）", value=u_prof.get("tracked_metrics", "シュート率,ハンドリング"))
 
-    st.divider()
-    st.subheader("📊 数値の記録")
-    m_names = [m.strip() for m in user_info.get('tracked_metrics', "ハンドリング").split(",") if m.strip()]
-    input_vals = {}
-    m_cols = st.columns(len(m_names) if m_names else 1)
-    for i, m_name in enumerate(m_names):
-        with m_cols[i % len(m_cols)]:
-            input_vals[m_name] = st.number_input(m_name, min_value=0.0, step=0.1, key=f"m_in_{i}")
+# --- 3. 今日の練習記録（History / Metrics） ---
+st.subheader("📝 今日の記録")
+today_date = datetime.now().strftime("%Y-%m-%d")
+
+rate = st.slider("自己評価 (rate)", 1, 5, 3)
+note = st.text_area("今日頑張ったこと (note)")
+
+# 動的に計測項目の入力欄を作成
+metric_values = {}
+for m_name in metrics_str.split(","):
+    m_name = m_name.strip()
+    if m_name:
+        metric_values[m_name] = st.number_input(f"{m_name} の結果", value=0.0)
+
+# --- 4. 保存アクション ---
+if st.button("設定と記録を保存する"):
+    # A. Profilesシートの更新
+    new_profile = {
+        "user_id": u_id, "height": height, "weight": weight, "goal": goal,
+        "coach_name": coach, "tracked_metrics": metrics_str,
+        "line_enabled": u_prof.get("line_enabled", False) # 既存値を保持
+    }
+    p_upd = profiles_df[profiles_df["user_id"] != u_id] # 既存行を削除して差し替え
+    profiles_df = pd.concat([p_upd, pd.DataFrame([new_profile])], ignore_index=True)
     
-    free_note = st.text_area("感想・頑張ったこと")
-
-    if st.button("今日の成果を報告する", use_container_width=True, type="primary"):
-        with st.spinner("コーチが分析中..."):
-            prompt = f"コーチ「{user_info['coach_name']}」として、達成度{achievement}%、数値{input_vals}、感想「{free_note}」を分析。100文字でアドバイスを。"
-            try: coach_msg = model.generate_content(prompt).text
-            except: coach_msg = "素晴らしい努力です！"
-            
-            # Metrics保存（数値）
-            m_rows = [{"user_id": selected_user, "date": today, "metric_name": "達成度", "value": achievement}]
-            for k, v in input_vals.items():
-                m_rows.append({"user_id": selected_user, "date": today, "metric_name": k, "value": v})
-            conn.update(worksheet="Metrics", data=pd.concat([metrics_df, pd.DataFrame(m_rows)]))
-            
-            # History保存（テキスト）
-            h_rows = [{"user_id": selected_user, "date": today, "coach_comment": coach_msg, "free_text": free_note}]
-            conn.update(worksheet="History", data=pd.concat([history_df, pd.DataFrame(h_rows)]))
-            
-            st.cache_data.clear(); st.balloons(); st.rerun()
-
-# --- 5. 過去の記録表示 ---
-else:
-    st.subheader(f"📊 {st.session_state.selected_date} の詳細")
-    past_m = metrics_df[(metrics_df['user_id'] == selected_user) & (metrics_df['date'] == st.session_state.selected_date)]
-    past_h = history_df[(history_df['user_id'] == selected_user) & (history_df['date'] == st.session_state.selected_date)]
+    # B. Historyシートへの追加（1回分）
+    new_history = pd.DataFrame([{
+        "user_id": u_id, "date": today_date, "rate": rate, "note": note
+    }])
+    history_df = pd.concat([history_df, new_history], ignore_index=True)
     
-    if past_m.empty: st.info("この日の記録はありません。")
-    else:
-        for _, row in past_m.iterrows():
-            st.write(f"✅ **{row['metric_name']}**: {row['value']}")
-        if not past_h.empty:
-            st.success(f"💡 **コーチ**: {past_h.iloc[0].get('coach_comment', 'なし')}")
-            st.info(f"📝 **メモ**: {past_h.iloc[0].get('free_text', 'なし')}")
+    # C. Metricsシートへの追加（項目数分）
+    new_metrics_rows = []
+    for name, val in metric_values.items():
+        new_metrics_rows.append({"user_id": u_id, "date": today_date, "metric_name": name, "value": val})
+    metrics_df = pd.concat([metrics_df, pd.DataFrame(new_metrics_rows)], ignore_index=True)
 
-
-
-
-
+    # 全シートを更新
+    conn.update(worksheet="Profiles", data=profiles_df)
+    conn.update(worksheet="History", data=history_df)
+    conn.update(worksheet="Metrics", data=metrics_df)
+    
+    st.success("全てのデータを適切なシートに保存しました！")
+    st.balloons()
