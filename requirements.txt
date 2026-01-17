@@ -3,4 +3,6 @@ google-generativeai
 pandas
 pillow
 requests
+streamlit
+pandas
 st-gsheets-connection
