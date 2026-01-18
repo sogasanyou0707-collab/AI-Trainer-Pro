@@ -29,7 +29,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 接続 & データ読み込み (ご提示のロジック)
+# 2. 接続 & データ読み込み (ご提示のロジックを完全復元)
 # ==========================================
 @st.cache_data(ttl=10)
 def load_data():
@@ -39,7 +39,7 @@ def load_data():
         h = conn.read(worksheet="History", ttl=0)
         m = conn.read(worksheet="Metrics", ttl=0)
         
-        # 日付の型を YYYY-MM-DD 文字列に完全統一
+        # --- 日付の型を YYYY-MM-DD 文字列に完全統一 ---
         for df in [h, m]:
             if not df.empty and "date" in df.columns:
                 df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
@@ -59,7 +59,7 @@ def load_data():
 profiles_df, history_df, metrics_df = load_data()
 
 # ==========================================
-# 3. メインUI：ユーザー & 日付
+# 3. メインUI：ユーザー & カレンダー
 # ==========================================
 st.title("🏀 AI Trainer Pro")
 
@@ -74,7 +74,7 @@ with col_d:
 is_new = selected_user == "新規登録"
 u_prof = profiles_df[profiles_df["user_id"] == selected_user].iloc[0] if not is_new and not profiles_df.empty else pd.Series()
 
-# --- 過去データの検索 (ご提示のロジック) ---
+# --- その日の既存記録の読み出し (ご提示の成功ロジック) ---
 existing_history = pd.Series()
 existing_metrics = pd.DataFrame()
 if not is_new:
@@ -85,31 +85,28 @@ if not is_new:
         existing_metrics = metrics_df[(metrics_df["user_id"] == selected_user) & (metrics_df["date"] == target_date_str)]
 
 # ==========================================
-# 4. サイドバー設定 (LINE情報の可視化・編集)
+# 4. サイドバー設定 (LINE情報の可視化)
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ LINE連携・AI設定")
-    
-    # スプレッドシートから読み込んだID/Tokenを反映
-    line_token_input = st.text_input("LINE Channel Token", 
-                                     value=str(u_prof.get("line_token", "")) if pd.notna(u_prof.get("line_token")) else "",
-                                     type="password")
-    line_user_id_input = st.text_input("LINE User ID", 
-                                       value=str(u_prof.get("line_user_id", "")) if pd.notna(u_prof.get("line_user_id")) else "")
+    st.header("⚙️ システム設定")
+    # シートのE列・F列から読み込んだ情報を表示
+    st.info(f"LINE Token: {'設定済' if pd.notna(u_prof.get('line_token')) else '未設定'}")
+    line_token_val = st.text_input("LINE Channel Token (修正用)", 
+                                   value=str(u_prof.get("line_token", "")) if pd.notna(u_prof.get("line_token")) else "", type="password")
+    line_user_val = st.text_input("LINE User ID (修正用)", 
+                                  value=str(u_prof.get("line_user_id", "")) if pd.notna(u_prof.get("line_user_id")) else "")
     
     st.divider()
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     ms = [m.name.replace('models/', '') for m in genai.list_models() if 'generateContent' in m.supported_generation_methods and "1.5" not in m.name]
-    sel_model = st.selectbox("AI Model", ms, index=0)
-    st.session_state.sel_model = sel_model
+    st.session_state.sel_model = st.selectbox("AI Model", ms, index=0)
 
 # ==========================================
-# 5. 詳細設定 (Profiles)
+# 5. 詳細設定 (項目管理)
 # ==========================================
 with st.expander("⚙️ 詳細設定（プロフィール・項目管理）", expanded=is_new):
     u_id = st.text_input("ユーザーID", value=str(u_prof.get("user_id", "")) if pd.notna(u_prof.get("user_id")) else "")
     u_goal = st.text_area("目標", value=str(u_prof.get("goal", "")) if pd.notna(u_prof.get("goal")) else "")
-    
     coach_opts = ["安西先生", "熱血タイプ", "論理タイプ"]
     u_coach = st.selectbox("コーチ", options=coach_opts, 
                            index=coach_opts.index(u_prof.get("coach_name")) if u_prof.get("coach_name") in coach_opts else 0)
@@ -118,7 +115,7 @@ with st.expander("⚙️ 詳細設定（プロフィール・項目管理）", e
                                 value=str(u_prof.get("tracked_metrics", "シュート率,ハンドリング")))
 
 # ==========================================
-# 6. 振り返り入力 (ハンドリング数値の反映)
+# 6. 振り返り入力 (ハンドリング等の反映)
 # ==========================================
 st.divider()
 st.subheader(f"📝 {target_date_str} の振り返り")
@@ -129,7 +126,7 @@ except: def_rate = 3
 rate = st.slider("自己評価", 1, 5, def_rate)
 note = st.text_area("練習内容・気づき", value=str(existing_history.get("note", "")), height=150)
 
-# --- 数値の自動反映 (ご提示のロジック) ---
+# --- ここが重要：以前成功していたMetrics反映ロジックを完全再現 ---
 metric_inputs = {}
 if metrics_str:
     for m_name in metrics_str.split(","):
@@ -137,14 +134,15 @@ if metrics_str:
         if m_name:
             prev_val = 0.0
             if not existing_metrics.empty:
+                # 項目名で一致する行を検索
                 m_match = existing_metrics[existing_metrics["metric_name"] == m_name]
                 if not m_match.empty:
                     try: prev_val = float(m_match.iloc[-1]["value"])
                     except: prev_val = 0.0
-            metric_inputs[m_name] = st.number_input(f"{m_name} の結果", value=prev_val, key=f"val_{m_name}")
+            metric_inputs[m_name] = st.number_input(f"{m_name} の結果", value=prev_val)
 
 # ==========================================
-# 7. 保存 & LINE報告 (データ保護 & サイドバー連携)
+# 7. 保存 & LINE報告 (データ保護ロジック)
 # ==========================================
 if st.button("💾 記録を保存してLINE報告", use_container_width=True):
     if not u_id:
@@ -153,44 +151,40 @@ if st.button("💾 記録を保存してLINE報告", use_container_width=True):
         try:
             conn = st.connection("gsheets", type=GSheetsConnection)
             
-            # --- A. Profilesの安全な更新 (列を消さないロジック) ---
-            # 最新のProfilesを読み直す
+            # --- Profiles更新 (特定のセルだけを更新し、E, F列を守る) ---
             p_latest = conn.read(worksheet="Profiles", ttl=0)
             new_p_data = {
                 "user_id": u_id, "goal": u_goal, "coach_name": u_coach, "tracked_metrics": metrics_str,
-                "line_token": line_token_input, "line_user_id": line_user_id_input
+                "line_token": line_token_val, "line_user_id": line_user_val
             }
             
             if u_id in p_latest["user_id"].astype(str).values:
-                # 既存ユーザーなら行を特定して更新
                 idx = p_latest[p_latest["user_id"].astype(str) == u_id].index[0]
                 for key, val in new_p_data.items():
                     p_latest.at[idx, key] = val
-                p_upd = p_latest
+                final_p = p_latest
             else:
-                # 新規ユーザーなら連結
-                p_upd = pd.concat([p_latest, pd.DataFrame([new_p_data])], ignore_index=True)
-            
-            # --- B. History & Metrics のマージ ---
+                final_p = pd.concat([p_latest, pd.DataFrame([new_p_data])], ignore_index=True)
+
+            # --- History & Metrics 更新 ---
             h_upd = pd.concat([history_df[~((history_df["user_id"] == u_id) & (history_df["date"] == target_date_str))], 
                                pd.DataFrame([{"user_id": u_id, "date": target_date_str, "rate": rate, "note": note}])], ignore_index=True)
             
-            m_new_rows = [{"user_id": u_id, "date": target_date_str, "metric_name": k, "value": v} for k, v in metric_inputs.items()]
-            m_upd = pd.concat([metrics_df[~((metrics_df["user_id"] == u_id) & (metrics_df["date"] == target_date_str))], pd.DataFrame(m_new_rows)], ignore_index=True)
+            m_rows = [{"user_id": u_id, "date": target_date_str, "metric_name": k, "value": v} for k, v in metric_inputs.items()]
+            m_upd = pd.concat([metrics_df[~((metrics_df["user_id"] == u_id) & (metrics_df["date"] == target_date_str))], pd.DataFrame(m_rows)], ignore_index=True)
 
             # スプレッドシート保存
-            conn.update(worksheet="Profiles", data=p_upd)
+            conn.update(worksheet="Profiles", data=final_p)
             conn.update(worksheet="History", data=h_upd)
             conn.update(worksheet="Metrics", data=m_upd)
 
-            # --- C. LINE送信 (サイドバーの入力値を使用) ---
-            if line_token_input and line_user_id_input:
+            # --- LINE報告 ---
+            if line_token_val and line_user_val:
                 m_txt = "\n".join([f"・{k}: {v}" for k, v in metric_inputs.items()])
                 line_msg = f"【AI報告】{target_date_str}\n評価: {int(rate)}\n内容: {str(note)}\n\n[数値]\n{m_txt}"
-                
-                payload = {"to": str(line_user_id_input), "messages": [{"type": "text", "text": line_msg}]}
-                headers = {"Authorization": f"Bearer {line_token_input}", "Content-Type": "application/json"}
-                res = requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
+                payload = {"to": str(line_user_val), "messages": [{"type": "text", "text": line_msg}]}
+                headers = {"Authorization": f"Bearer {line_token_val}", "Content-Type": "application/json"}
+                requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
             
             st.cache_data.clear()
             st.success("全て完了しました！")
@@ -198,12 +192,8 @@ if st.button("💾 記録を保存してLINE報告", use_container_width=True):
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
 
-# ==========================================
-# 8. AIコーチ機能
-# ==========================================
-if st.button("💡 コーチのアドバイスを受ける", use_container_width=True):
-    with st.spinner("AIコーチ分析中..."):
+if st.button("💡 コーチの助言を受ける"):
+    with st.spinner("分析中..."):
         model = genai.GenerativeModel(st.session_state.sel_model)
-        personalities = {"安西先生": "穏やか", "熱血タイプ": "情熱的", "論理タイプ": "分析的"}
-        prompt = f"コーチ設定:{personalities.get(u_coach)}\n目標:{u_goal}\n報告:{note}\n数値:{metric_inputs}\nのアドバイスを。"
+        prompt = f"コーチ:{u_coach}, 目標:{u_goal}, 内容:{note}, 数値:{metric_inputs}から3つ助言を。"
         st.info(model.generate_content(prompt).text)
