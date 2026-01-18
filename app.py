@@ -14,9 +14,7 @@ st.set_page_config(page_title="AI Trainer Pro", layout="centered")
 
 st.markdown("""
     <style>
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-        background-color: white !important; color: black !important;
-    }
+    html, body, [data-testid="stAppViewContainer"] { background-color: white !important; color: black !important; }
     h1, h2, h3, p, span, label, li, .stMarkdown { color: black !important; }
     button, div.stButton > button { 
         background-color: white !important; color: black !important; 
@@ -29,36 +27,34 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 接続 & データ読み込み (安定版)
+# 2. データの取得 (E列: line_token, F列: line_user_id を含む)
 # ==========================================
 @st.cache_data(ttl=5)
-def load_data():
+def fetch_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
     try:
         p = conn.read(worksheet="Profiles", ttl=0)
         h = conn.read(worksheet="History", ttl=0)
         m = conn.read(worksheet="Metrics", ttl=0)
         
-        # 日付標準化 (YYYY-MM-DD)
-        for df in [h, m]:
-            if not df.empty and "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
-        
-        # 空白トリミング
+        # 型の標準化と空白削除
         for df in [p, h, m]:
             if not df.empty:
+                df.columns = [c.strip() for c in df.columns] # 列名の空白削除
+                if "date" in df.columns:
+                    df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
                 for col in df.columns:
                     if df[col].dtype == 'object':
                         df[col] = df[col].astype(str).str.strip()
         return p, h, m
     except Exception as e:
-        st.error(f"読み込み失敗: {e}")
+        st.error(f"読み込みエラー: {e}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-profiles_df, history_df, metrics_df = load_data()
+profiles_df, history_df, metrics_df = fetch_data()
 
 # ==========================================
-# 3. メインUI
+# 3. メインUI：ユーザー & 日付
 # ==========================================
 st.title("🏀 AI Trainer Pro")
 
@@ -68,129 +64,117 @@ with col_u:
     selected_user = st.selectbox("👤 ユーザー", options=["新規登録"] + u_list)
 with col_d:
     selected_date = st.date_input("📅 記録日", value=datetime.now())
-    target_date_str = selected_date.strftime("%Y-%m-%d")
+    date_str = selected_date.strftime("%Y-%m-%d")
 
-# ユーザー詳細
+# ユーザー詳細の特定
 is_new = selected_user == "新規登録"
-u_prof_row = profiles_df[profiles_df["user_id"] == selected_user]
+u_prof_row = profiles_df[profiles_df["user_id"] == str(selected_user)]
 u_prof = u_prof_row.iloc[0] if not is_new and not u_prof_row.empty else pd.Series()
 
-# 過去データ検索
-existing_history = history_df[(history_df["user_id"] == selected_user) & (history_df["date"] == target_date_str)] if not is_new else pd.DataFrame()
-existing_metrics = metrics_df[(metrics_df["user_id"] == selected_user) & (metrics_df["date"] == target_date_str)] if not is_new else pd.DataFrame()
-
 # ==========================================
-# 4. プロフィール設定 (詳細設定)
+# 4. 詳細設定 (編集してもE/F列は壊さない仕組み)
 # ==========================================
-with st.expander("⚙️ 詳細設定（項目・コーチ設定）", expanded=is_new):
+with st.expander("⚙️ 詳細設定（プロフィール・項目管理）", expanded=is_new):
     u_id = st.text_input("ユーザーID", value=str(u_prof.get("user_id", "")))
     u_goal = st.text_area("目標", value=str(u_prof.get("goal", "")))
-    coach_opts = ["安西先生", "熱血タイプ", "論理タイプ"]
-    u_coach = st.selectbox("コーチ", options=coach_opts, 
-                           index=coach_opts.index(u_prof.get("coach_name")) if u_prof.get("coach_name") in coach_opts else 0)
+    c_opts = ["安西先生", "熱血タイプ", "論理タイプ"]
+    u_coach = st.selectbox("コーチ", options=c_opts, 
+                           index=c_opts.index(u_prof.get("coach_name")) if u_prof.get("coach_name") in c_opts else 0)
     
-    # 計測項目の同期
     if 'm_list' not in st.session_state or st.session_state.get('last_u') != selected_user:
         st.session_state.m_list = [m.strip() for m in str(u_prof.get("tracked_metrics", "シュート率,ハンドリング")).split(",") if m.strip()]
         st.session_state.last_u = selected_user
 
-    c_add, c_del = st.columns(2)
-    new_m = c_add.text_input("項目追加")
-    if c_add.button("追加"):
-        if new_m and new_m not in st.session_state.m_list:
-            st.session_state.m_list.append(new_m)
-            st.rerun()
-    if st.session_state.m_list:
-        del_m = c_del.selectbox("項目削除", options=["選択"] + st.session_state.m_list)
-        if c_del.button("削除") and del_m != "選択":
-            st.session_state.m_list.remove(del_m)
-            st.rerun()
-
 # ==========================================
-# 5. 入力フォーム
+# 5. 振り返り入力
 # ==========================================
 st.divider()
-st.subheader(f"📝 {target_date_str} の振り返り")
+h_match = history_df[(history_df["user_id"] == str(selected_user)) & (history_df["date"] == date_str)]
+m_match = metrics_df[(metrics_df["user_id"] == str(selected_user)) & (metrics_df["date"] == date_str)]
 
-rate = st.slider("自己評価", 1, 5, int(existing_history.iloc[0]["rate"]) if not existing_history.empty else 3)
-note = st.text_area("内容", value=str(existing_history.iloc[0]["note"]) if not existing_history.empty else "", height=150)
+if not h_match.empty:
+    st.success(f"✅ {date_str} の記録を読み込みました")
 
-metric_inputs = {}
+rate = st.slider("自己評価", 1, 5, int(float(h_match.iloc[0]["rate"])) if not h_match.empty else 3)
+note = st.text_area("内容", value=str(h_match.iloc[0]["note"]) if not h_match.empty else "", height=150)
+
+# 数値入力
+metric_results = {}
 for m_name in st.session_state.m_list:
     v_init = 0.0
-    if not existing_metrics.empty:
-        m_match = existing_metrics[existing_metrics["metric_name"] == m_name]
-        if not m_match.empty:
-            try: v_init = float(m_match.iloc[-1]["value"])
+    if not m_match.empty:
+        target_m = m_match[m_match["metric_name"] == m_name]
+        if not target_m.empty:
+            try: v_init = float(target_m.iloc[-1]["value"])
             except: v_init = 0.0
-    metric_inputs[m_name] = st.number_input(f"{m_name} の結果", value=v_init)
+    metric_results[m_name] = st.number_input(f"{m_name} の結果", value=v_init, key=f"inp_{m_name}")
 
 # ==========================================
-# 6. 【重要】保存 & LINE送信 (データ保護ロジック)
+# 6. 保存 & LINE連携 (E列/F列を保護して取得)
 # ==========================================
-
-
 if st.button("💾 記録を保存してLINE報告", use_container_width=True):
     if not u_id:
-        st.error("IDを入力してください")
+        st.error("ユーザーIDを入力してください")
     else:
-        with st.spinner("処理中..."):
+        with st.spinner("保存とLINE送信を実行中..."):
             conn = st.connection("gsheets", type=GSheetsConnection)
             
-            # --- A. Profilesの安全な更新 ---
-            # 最新のシートを読み直し、全ての列を保持する
+            # --- Profilesの保護更新ロジック ---
             p_latest = conn.read(worksheet="Profiles", ttl=0)
             if u_id in p_latest["user_id"].astype(str).values:
-                # 既存ユーザーなら、その行の特定の列だけ書き換える
+                # 既存ユーザー：E列・F列はそのまま、A〜D列だけ更新
                 idx = p_latest[p_latest["user_id"].astype(str) == u_id].index[0]
                 p_latest.at[idx, "goal"] = u_goal
                 p_latest.at[idx, "coach_name"] = u_coach
                 p_latest.at[idx, "tracked_metrics"] = ",".join(st.session_state.m_list)
-                updated_p = p_latest
+                # E列(line_token)とF列(line_user_id)は既存の値を保持
+                token = p_latest.at[idx, "line_token"]
+                user_id = p_latest.at[idx, "line_user_id"]
             else:
-                # 新規ユーザーなら追加
+                # 新規ユーザー
                 new_row = pd.DataFrame([{"user_id": u_id, "goal": u_goal, "coach_name": u_coach, "tracked_metrics": ",".join(st.session_state.m_list)}])
-                updated_p = pd.concat([p_latest, new_row], ignore_index=True)
+                p_latest = pd.concat([p_latest, new_row], ignore_index=True)
+                token = None
+                user_id = None
             
-            # --- B. History & Metrics の更新 ---
-            h_clean = history_df[~((history_df["user_id"] == u_id) & (history_df["date"] == target_date_str))]
-            h_new = pd.DataFrame([{"user_id": u_id, "date": target_date_str, "rate": rate, "note": note}])
+            # History & Metrics のマージ
+            h_upd = pd.concat([history_df[~((history_df["user_id"] == u_id) & (history_df["date"] == date_str))], 
+                               pd.DataFrame([{"user_id": u_id, "date": date_str, "rate": rate, "note": note}])], ignore_index=True)
             
-            m_clean = metrics_df[~((metrics_df["user_id"] == u_id) & (metrics_df["date"] == target_date_str))]
-            m_new = pd.DataFrame([{"user_id": u_id, "date": target_date_str, "metric_name": k, "value": v} for k, v in metric_inputs.items()])
+            m_new_list = [{"user_id": u_id, "date": date_str, "metric_name": k, "value": v} for k, v in metric_results.items()]
+            m_upd = pd.concat([metrics_df[~((metrics_df["user_id"] == u_id) & (metrics_df["date"] == date_str))], pd.DataFrame(m_new_list)], ignore_index=True)
 
-            # スプレッドシートへ書き込み
-            conn.update(worksheet="Profiles", data=updated_p)
-            conn.update(worksheet="History", data=pd.concat([h_clean, h_new], ignore_index=True))
-            conn.update(worksheet="Metrics", data=pd.concat([m_clean, m_new], ignore_index=True))
+            # 保存
+            conn.update(worksheet="Profiles", data=p_latest)
+            conn.update(worksheet="History", data=h_upd)
+            conn.update(worksheet="Metrics", data=m_upd)
 
-            # --- C. LINE送信 (保存した直後の情報を使用) ---
-            target_user_info = updated_p[updated_p["user_id"] == u_id].iloc[0]
-            l_token = target_user_info.get("line_token")
-            l_id = target_user_info.get("line_user_id")
-
-            if l_token and l_id:
-                m_txt = "\n".join([f"・{k}: {v}" for k, v in metric_inputs.items()])
-                line_text = f"【練習報告】{target_date_str}\n評価: {int(rate)}\n内容: {str(note)}\n\n[数値]\n{m_txt}"
+            # --- LINE送信実行 ---
+            if token and user_id and str(token) != "None" and str(user_id) != "None":
+                m_txt = "\n".join([f"・{k}: {v}" for k, v in metric_results.items()])
+                msg = f"【練習報告】{date_str}\n評価: {int(rate)}\n内容: {str(note)}\n\n[数値]\n{m_txt}"
                 
-                payload = json.dumps({
-                    "to": str(l_id),
-                    "messages": [{"type": "text", "text": line_text}]
-                })
-                headers = {"Authorization": f"Bearer {l_token}", "Content-Type": "application/json"}
-                res = requests.post("https://api.line.me/v2/bot/message/push", headers=headers, data=payload)
+                payload = json.dumps({"to": str(user_id), "messages": [{"type": "text", "text": msg}]})
+                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                
+                try:
+                    res = requests.post("https://api.line.me/v2/bot/message/push", headers=headers, data=payload)
+                    if res.status_code == 200: st.success("LINE送信成功！")
+                    else: st.error(f"LINE送信失敗(Status:{res.status_code})")
+                except: st.error("LINE通信エラー")
+            else:
+                st.warning("LINE連携情報（E列/F列）がProfilesシートにありません。")
             
             st.cache_data.clear()
-            st.success("全てのデータを保存し、LINEへ報告しました！")
             st.rerun()
 
 # --- AIコーチ ---
 if st.button("💡 コーチのアドバイスを受ける", use_container_width=True):
-    with st.spinner("分析中..."):
+    with st.spinner("思考中..."):
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        model = genai.GenerativeModel(st.session_state.get("sel_model", "gemini-3-pro"))
-        personalities = {"安西先生": "穏やか", "熱血タイプ": "情熱的", "論理タイプ": "分析的"}
-        prompt = f"性格:{personalities.get(u_coach)}\n目標:{u_goal}\n報告:{note}\n数値:{metric_inputs}\nのアドバイスを。"
+        model_name = st.session_state.get("sel_model", "gemini-3-pro")
+        model = genai.GenerativeModel(model_name)
+        prompt = f"コーチ:{u_coach}\n目標:{u_goal}\n本日の内容:{note}\n数値:{metric_results}\nのアドバイスを3点。"
         st.info(model.generate_content(prompt).text)
 
 with st.sidebar:
